@@ -37,3 +37,6 @@ backend/data/*.db-shm
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# 本機 Wi-Fi 憑證，不進版控
+firmware/include/LocalSecrets.h

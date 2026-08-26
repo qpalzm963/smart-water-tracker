@@ -86,6 +86,52 @@ pio device monitor
 
 ---
 
+## 📶 網路配網與雲端直傳 (WiFi & Cloud Upload)
+
+> **⚠️ 預設為 BLE-only 模式，本節功能目前停用。**
+>
+> `Config.h` 的 `WATER_BLE_ONLY` 預設為 `1`：不啟動配網熱點、不做裝置端雲端直傳，
+> Wi-Fi 完全不初始化，單一 2.4GHz radio 全部留給 BLE。資料由手機透過 BLE 取走後，
+> 再由手機呼叫後端 API。
+>
+> 這是因為 ESP32-C3 只支援 2.4GHz 且僅支援一般密碼制 (WPA2 Personal)，
+> 無法加入 WPA2 Enterprise 企業網路。若有 2.4GHz + 一般密碼的網路可用，
+> 把 `WATER_BLE_ONLY` 設為 `0` 即可啟用本節所有功能。
+
+ESP32-C3 支援 **BLE 輔助配網** 與 **WiFi 獨立雲端直傳**：
+
+### 1. BLE 配網指令
+透過 BLE `COMMAND_UUID` 發送 JSON 指令：
+* **配網與配置雲端**：
+  ```json
+  {
+    "action": "configure_wifi",
+    "ssid": "Home_WiFi_2.4G",
+    "password": "wifi_password",
+    "apiBaseUrl": "http://192.168.1.100:3000",
+    "deviceToken": "dvt_abcdef123456..."
+  }
+  ```
+* **清除 WiFi 設定**：
+  ```json
+  {"action": "clear_wifi"}
+  ```
+
+### 2. Serial 診斷指令
+
+| 指令 | 說明 |
+| :--- | :--- |
+| `WIFI:STATUS` | 顯示目前 WiFi 連線、IP、訊號強度與離線待傳佇列長度 |
+| `WIFI:CLEAR` | 清除 NVS 中儲存的 WiFi 設定與離線佇列 |
+| `WIFI:SET:<ssid>,<pass>,<url>,<token>` | 透過序列埠直接配置 WiFi 與雲端資訊 |
+| `TARE` | 去皮歸零 |
+| `CAL:<克數>` | 以已知重量校準，例如 `CAL:500` |
+| `RAW` | 顯示 HX711 狀態與原始 24-bit ADC 讀數 |
+| `STATUS` | 顯示重量、狀態機、今日總計與系統時間 |
+| `RESET` | 重設今日累計飲水量 |
+
+---
+
 ## 📡 API 規格總覽
 
 | 端點 | 方法 | 認證方式 | 說明 |
@@ -110,3 +156,4 @@ pio device monitor
 本專案提供 5 小時實體工作坊課程與教學套件（定價 NT$ 2,500，含完整硬體材料包）：
 - **工作坊說明與線上報名頁**：[workshop/index.html](workshop/index.html)
 - **主辦人籌備與開課指南**：[workshop/README.md](workshop/README.md)
+

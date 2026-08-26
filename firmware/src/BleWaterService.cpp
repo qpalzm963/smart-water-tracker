@@ -12,6 +12,7 @@
 #include "Config.h"
 #include "DrinkTracker.h"
 #include "ScaleManager.h"
+#include "WaterNetworkManager.h"
 
 class BleWaterService::Impl {
 public:
@@ -24,6 +25,42 @@ public:
 
 namespace {
 constexpr char CLAIM_SECRET_KEY[] = "claim_secret";
+
+// 只保留最近 N 筆。NVS 分割區僅 20KB，還要放校準值與各種金鑰，
+// 一次寫一個小 key 比重寫整塊 blob 對 flash 更友善。
+constexpr size_t PERSIST_SLOTS = 32;
+constexpr char PERSIST_HEAD_KEY[] = "evt_head";
+constexpr char PERSIST_COUNT_KEY[] = "evt_cnt";
+
+String persistSlotKey(size_t slot) {
+    char key[8];
+    snprintf(key, sizeof(key), "ev%02u", static_cast<unsigned>(slot));
+    return String(key);
+}
+
+// id 內不含 '|'（格式為 deviceId-epoch-session-seq），可安全當分隔符。
+String serializeEvent(const BleWaterEvent& event) {
+    return event.id + "|" + String(static_cast<unsigned long>(event.occurredAt)) + "|" +
+           String(static_cast<int>(event.type)) + "|" + String(event.amountMl) + "|" +
+           String(event.remainingMl) + "|" + String(event.todayTotalMl);
+}
+
+bool deserializeEvent(const String& raw, BleWaterEvent& out) {
+    int cut[5];
+    int from = 0;
+    for (int i = 0; i < 5; ++i) {
+        cut[i] = raw.indexOf('|', from);
+        if (cut[i] < 0) return false;
+        from = cut[i] + 1;
+    }
+    out.id = raw.substring(0, cut[0]);
+    out.occurredAt = static_cast<time_t>(raw.substring(cut[0] + 1, cut[1]).toInt());
+    out.type = static_cast<EventType>(raw.substring(cut[1] + 1, cut[2]).toInt());
+    out.amountMl = raw.substring(cut[2] + 1, cut[3]).toInt();
+    out.remainingMl = raw.substring(cut[3] + 1, cut[4]).toInt();
+    out.todayTotalMl = raw.substring(cut[4] + 1).toInt();
+    return out.id.length() > 0;
+}
 
 String generateClaimSecret() {
     const uint64_t claim = (static_cast<uint64_t>(esp_random()) << 32) | static_cast<uint64_t>(esp_random());
@@ -93,6 +130,14 @@ public:
             _service._pendingCommand = BleWaterService::PENDING_RESET_DAILY;
         } else if (strcmp(action, "rotate_claim") == 0) {
             _service._pendingCommand = BleWaterService::PENDING_ROTATE_CLAIM;
+        } else if (strcmp(action, "configure_wifi") == 0) {
+            _service._pendingWifiSsid = String(request["ssid"] | "");
+            _service._pendingWifiPass = String(request["password"] | "");
+            _service._pendingApiUrl = String(request["apiBaseUrl"] | "");
+            _service._pendingDevToken = String(request["deviceToken"] | "");
+            _service._pendingCommand = BleWaterService::PENDING_CONFIGURE_WIFI;
+        } else if (strcmp(action, "clear_wifi") == 0) {
+            _service._pendingCommand = BleWaterService::PENDING_CLEAR_WIFI;
         } else if (strcmp(action, "set_time") == 0) {
             const long long epoch = request["epoch"] | 0LL;
             if (epoch < TIME_SYNCED_EPOCH_MIN) {
@@ -152,10 +197,11 @@ BleWaterService::BleWaterService(const String& deviceId) : _deviceId(deviceId) {
 
 }
 
-void BleWaterService::begin(const String& deviceId, ScaleManager* scale, DrinkTracker* tracker) {
+void BleWaterService::begin(const String& deviceId, ScaleManager* scale, DrinkTracker* tracker, WaterNetworkManager* netManager) {
     _deviceId = deviceId;
     _scale = scale;
     _tracker = tracker;
+    _netManager = netManager;
 
     // Generate 64-bit random boot session ID and hardware claim secret
     const uint64_t session = (static_cast<uint64_t>(esp_random()) << 32) | static_cast<uint64_t>(esp_random());
@@ -164,6 +210,7 @@ void BleWaterService::begin(const String& deviceId, ScaleManager* scale, DrinkTr
     _bootSessionId = String(buf);
 
     _claimSecret = loadOrCreateClaimSecret();
+    restorePersistedEvents();
 
     const String suffix = _deviceId.length() >= 4
         ? _deviceId.substring(_deviceId.length() - 4)
@@ -205,6 +252,70 @@ void BleWaterService::begin(const String& deviceId, ScaleManager* scale, DrinkTr
     advertising->setMinPreferred(0x12);
     BLEDevice::startAdvertising();
     Serial.printf("[BLE] 服務已啟動: %s (%s, session: %s)\n", advertisedName.c_str(), _deviceId.c_str(), _bootSessionId.c_str());
+}
+
+void BleWaterService::persistEvent(const BleWaterEvent& event) {
+    Preferences prefs;
+    if (!prefs.begin(PREFS_NAMESPACE, false)) {
+        Serial.println("[BLE] 無法寫入事件備份，重開機後這筆會遺失");
+        return;
+    }
+    prefs.putString(persistSlotKey(_persistHead).c_str(), serializeEvent(event));
+    _persistHead = (_persistHead + 1) % PERSIST_SLOTS;
+    if (_persistCount < PERSIST_SLOTS) {
+        ++_persistCount;
+    }
+    prefs.putUInt(PERSIST_HEAD_KEY, static_cast<uint32_t>(_persistHead));
+    prefs.putUInt(PERSIST_COUNT_KEY, static_cast<uint32_t>(_persistCount));
+    prefs.end();
+}
+
+void BleWaterService::restorePersistedEvents() {
+    Preferences prefs;
+    if (!prefs.begin(PREFS_NAMESPACE, true)) {
+        return;
+    }
+    _persistHead = prefs.getUInt(PERSIST_HEAD_KEY, 0) % PERSIST_SLOTS;
+    _persistCount = prefs.getUInt(PERSIST_COUNT_KEY, 0);
+    if (_persistCount > PERSIST_SLOTS) {
+        _persistCount = PERSIST_SLOTS;
+    }
+
+    // 由最舊往最新放回 RAM ring，順序與 eventsAfter() 的走訪一致。
+    const size_t oldest = (_persistHead + PERSIST_SLOTS - _persistCount) % PERSIST_SLOTS;
+    size_t restored = 0;
+    for (size_t offset = 0; offset < _persistCount; ++offset) {
+        const String raw = prefs.getString(persistSlotKey((oldest + offset) % PERSIST_SLOTS).c_str(), "");
+        BleWaterEvent event;
+        if (raw.length() == 0 || !deserializeEvent(raw, event)) {
+            continue;
+        }
+        _events[_eventHead] = event;
+        _eventHead = (_eventHead + 1) % BleProtocol::EVENT_BUFFER_SIZE;
+        if (_eventCount < BleProtocol::EVENT_BUFFER_SIZE) {
+            ++_eventCount;
+        }
+        ++restored;
+    }
+    prefs.end();
+    if (restored > 0) {
+        Serial.printf("[BLE] 已從 NVS 還原 %u 筆未同步事件\n", static_cast<unsigned>(restored));
+    }
+}
+
+void BleWaterService::clearPersistedEvents() {
+    Preferences prefs;
+    if (!prefs.begin(PREFS_NAMESPACE, false)) {
+        return;
+    }
+    for (size_t slot = 0; slot < PERSIST_SLOTS; ++slot) {
+        prefs.remove(persistSlotKey(slot).c_str());
+    }
+    prefs.remove(PERSIST_HEAD_KEY);
+    prefs.remove(PERSIST_COUNT_KEY);
+    prefs.end();
+    _persistHead = 0;
+    _persistCount = 0;
 }
 
 bool BleWaterService::rotateClaimSecret() {
@@ -281,6 +392,26 @@ void BleWaterService::processPendingCommands() {
         applyDeviceTime(_pendingEpoch, _pendingTzOffsetMinutes);
         response["action"] = "set_time";
         response["epoch"] = static_cast<long long>(time(nullptr));
+    } else if (pending == PENDING_CONFIGURE_WIFI) {
+        bool ok = false;
+        if (_netManager != nullptr) {
+            ok = _netManager->saveConfig(_pendingWifiSsid, _pendingWifiPass, _pendingApiUrl, _pendingDevToken);
+        }
+        response["action"] = "configure_wifi";
+        response["success"] = ok;
+        response["ssid"] = _pendingWifiSsid;
+        if (_impl != nullptr && _impl->summary != nullptr) {
+            _impl->summary->setValue(summaryJson().c_str());
+        }
+    } else if (pending == PENDING_CLEAR_WIFI) {
+        if (_netManager != nullptr) {
+            _netManager->clearConfig();
+        }
+        response["action"] = "clear_wifi";
+        response["success"] = true;
+        if (_impl != nullptr && _impl->summary != nullptr) {
+            _impl->summary->setValue(summaryJson().c_str());
+        }
     } else {
         Serial.println("[BLE] 執行重設今日喝水量，已重設為 0 ml");
         if (_tracker != nullptr) {
@@ -334,6 +465,7 @@ void BleWaterService::recordEvent(EventType type, time_t occurredAt, int amountM
     if (_eventCount < BleProtocol::EVENT_BUFFER_SIZE) {
         ++_eventCount;
     }
+    persistEvent(event);
     _todayTotalMl = todayTotalMl;
     updateSummary(_todayTotalMl, _dailyGoalMl);
     publishLiveEvent(event);
@@ -402,6 +534,17 @@ String BleWaterService::summaryJson() const {
     document["isStable"] = _isScaleStable;
     document["timeSynced"] = isClockSynced();
     document["claimSecret"] = _claimSecret;
+    if (_netManager != nullptr) {
+        document["wifiConnected"] = _netManager->isConnected();
+        document["wifiConfigured"] = _netManager->isConfigured();
+        document["ip"] = _netManager->getIpAddress();
+        document["rssi"] = _netManager->getRssi();
+        document["ssid"] = _netManager->getSsid();
+    } else {
+        document["wifiConnected"] = false;
+        document["wifiConfigured"] = false;
+        document["ip"] = "0.0.0.0";
+    }
     const String latestId = latestEventId();
     if (latestId.length() == 0) {
         document["latestEventId"] = nullptr;

@@ -38,9 +38,42 @@ void test_refill_event_recording_and_64bit_boot_session() {
     TEST_ASSERT_NOT_EQUAL(service1.claimSecret(), "");
 }
 
+// 沒有 Wi-Fi 上傳路徑之後，BLE 是資料離開裝置的唯一管道。裝置在手機取走事件前
+// 重開機時，那些事件必須還在——否則就是永久遺失。
+void test_events_survive_reboot_for_phone_sync() {
+    BleWaterService before("water_c3_a1b2");
+    before.clearPersistedEvents();
+    before.recordDrink(1721389200, 250, 450, 250);
+    const String firstId = before.latestEventId();
+    before.recordDrink(1721389201, 200, 250, 450);
+    const String secondId = before.latestEventId();
+
+    // 模擬重開機: 全新實例，RAM buffer 是空的
+    BleWaterService after("water_c3_a1b2");
+    TEST_ASSERT_EQUAL_UINT32(0, after.eventsAfter("").size());
+
+    after.restorePersistedEvents();
+
+    const std::vector<BleWaterEvent> all = after.eventsAfter("");
+    TEST_ASSERT_EQUAL_UINT32(2, all.size());
+    TEST_ASSERT_EQUAL_STRING(firstId.c_str(), all[0].id.c_str());
+    TEST_ASSERT_EQUAL_STRING(secondId.c_str(), all[1].id.c_str());
+    TEST_ASSERT_EQUAL_INT(250, all[0].amountMl);
+    TEST_ASSERT_EQUAL_INT(450, all[0].remainingMl);
+    TEST_ASSERT_EQUAL(EVENT_DRINK, all[0].type);
+
+    // 手機的 cursor 來自重開機前，補送仍必須從正確位置接續
+    const std::vector<BleWaterEvent> afterCursor = after.eventsAfter(firstId);
+    TEST_ASSERT_EQUAL_UINT32(1, afterCursor.size());
+    TEST_ASSERT_EQUAL_STRING(secondId.c_str(), afterCursor[0].id.c_str());
+
+    after.clearPersistedEvents();
+}
+
 void setup() {
     delay(2000);
     UNITY_BEGIN();
+    RUN_TEST(test_events_survive_reboot_for_phone_sync);
     RUN_TEST(test_history_replay_returns_only_events_after_cursor);
     RUN_TEST(test_refill_event_recording_and_64bit_boot_session);
     UNITY_END();
