@@ -79,7 +79,7 @@ Three.js 元件只接收標準化的進度、成功事件序號、是否允許�
 
 - `three`：3D 場景與材質基礎。
 - `@react-three/fiber@8`：React 18 對應的 Three.js renderer。
-- `@react-three/drei`：只採用必要的場景 helper；不引入昂貴的後製管線。
+- 場景 helper：以本地 `useFrame` 實作固定成本的漂浮效果，避免為單一 helper 引入額外套件。
 - `motion`：DOM 進場、按壓、成功回饋與減少動態偵測。
 - CSS：靜態顏色、表面、描邊、Focus 與簡單 Hover 狀態。
 

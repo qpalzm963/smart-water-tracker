@@ -6,13 +6,13 @@
 
 **Architecture:** Keep Context access and API actions in `DashboardView`, pass normalized display data into DOM-only dashboard components, and isolate React Three Fiber behind a lazy-loaded `HydrationScene` boundary. Use Motion for DOM transitions and R3F frame updates for the glass, water level, and one-shot ripple; fall back to the existing SVG glass when WebGL or motion is unavailable.
 
-**Tech Stack:** React 18, TypeScript, Vite, Vitest, Three.js, React Three Fiber 8, Drei 9, Motion for React, Lucide React, CSS.
+**Tech Stack:** React 18, TypeScript, Vite, Vitest, Three.js, React Three Fiber 8, Motion for React, Lucide React, CSS.
 
 ---
 
 ## File Map
 
-- Modify `app/package.json` and `package-lock.json`: add Three.js, R3F, Drei, Motion, and Three types.
+- Modify `app/package.json` and `package-lock.json`: add Three.js, R3F, Motion, and Three types.
 - Modify `app/src/views/dashboard/dashboardViewModel.ts`: clamp and normalize progress for the scene.
 - Modify `app/tests/dashboardViewModel.test.ts`: cover scene progress edge cases.
 - Create `app/src/views/dashboard/three/HydrationScene.tsx`: lazy loading, WebGL/reduced-motion detection, error boundary, and SVG fallback.
@@ -37,7 +37,7 @@
 Run:
 
 ```bash
-npm install --workspace app three@^0.180.0 @types/three@^0.180.0 @react-three/fiber@^8.18.0 @react-three/drei@^9 motion@^12
+npm install --workspace app three@^0.180.0 @types/three@^0.180.0 @react-three/fiber@^8.18.0 motion@^12
 ```
 
 Expected: npm updates `app/package.json` and the root lockfile without peer-dependency errors. Fiber stays on major version 8 because the app uses React 18.
@@ -47,7 +47,7 @@ Expected: npm updates `app/package.json` and the root lockfile without peer-depe
 Run:
 
 ```bash
-npm ls --workspace app three @react-three/fiber @react-three/drei motion
+npm ls --workspace app three @react-three/fiber motion
 ```
 
 Expected: all four packages resolve once and `npm ls` exits with code 0.
@@ -201,9 +201,9 @@ export const HydrationScene: React.FC<HydrationSceneProps> = ({
 Implement `HydrationCanvas.tsx`:
 
 ```tsx
-import React from 'react';
-import { Canvas } from '@react-three/fiber';
-import { Float } from '@react-three/drei';
+import React, { useRef } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
 import { TechWaterGlass } from './TechWaterGlass';
 
 interface HydrationCanvasProps {
@@ -211,6 +211,17 @@ interface HydrationCanvasProps {
   successPulseId: number;
   active: boolean;
 }
+
+const SceneFloat: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const groupRef = useRef<THREE.Group>(null);
+  useFrame((state) => {
+    if (!groupRef.current) return;
+    const time = state.clock.getElapsedTime();
+    groupRef.current.position.y = Math.sin(time * 1.35) * 0.045;
+    groupRef.current.rotation.x = Math.sin(time * 0.85) * 0.012;
+  });
+  return <group ref={groupRef}>{children}</group>;
+};
 
 const HydrationCanvas: React.FC<HydrationCanvasProps> = ({ progress, successPulseId, active }) => (
   <Canvas
@@ -224,9 +235,9 @@ const HydrationCanvas: React.FC<HydrationCanvasProps> = ({ progress, successPuls
     <directionalLight position={[3, 4, 4]} intensity={2.2} color="#c9f8ff" />
     <pointLight position={[-2, 0, 2]} intensity={12} distance={7} color="#238bff" />
     <pointLight position={[2, -1, 1]} intensity={7} distance={5} color="#54e6ff" />
-    <Float speed={1.4} rotationIntensity={0.12} floatIntensity={0.18}>
+    <SceneFloat>
       <TechWaterGlass progress={progress} successPulseId={successPulseId} />
-    </Float>
+    </SceneFloat>
   </Canvas>
 );
 
