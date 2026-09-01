@@ -179,4 +179,3 @@ ESP32-C3 支援 **BLE 輔助配網** 與 **WiFi 獨立雲端直傳**：
 本專案提供 5 小時實體工作坊課程與教學套件（定價 NT$ 2,500，含完整硬體材料包）：
 - **工作坊說明與線上報名頁**：[workshop/index.html](workshop/index.html)
 - **主辦人籌備與開課指南**：[workshop/README.md](workshop/README.md)
-
