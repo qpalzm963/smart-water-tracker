@@ -91,8 +91,9 @@
 
 - 找不到游標：若等於 NVS 中最近一次 ACK，回覆冪等成功；否則回覆失敗且不寫入。
 - 找到游標：計算 ACK 的連續事件數；RAM ring 維持 head 不變並縮減 count，使 oldest 自動前移。
-- NVS ring 只縮減持久化 count 並移除已排除的舊 slot，不重寫仍保留的事件，降低 flash 寫入量與中途斷電風險。
-- 更新 NVS metadata 成功後才更新 RAM count、保存最近 ACK eventId 並回覆成功。
+- 每次歷史批次都帶 `batchId` 與從 0 開始的 `sequence`；完成通知帶 `count`、`firstEventId`、`lastEventId`。App 驗證完整連續後才允許上傳與 ACK，缺包、錯序或跨批次一律保留裝置資料並重試。
+- NVS ring 使用 32 筆有效容量加 1 個 copy-on-write spare slot；事件先寫 spare，再以雙 metadata slot 的 generation/checksum 原子提交 head、count 與最近 ACK eventId。
+- ACK 只提交一份包含新 count 與 ACK cursor 的 metadata blob；read-back 驗證成功後才更新 RAM 並回覆成功。
 - ACK 最後一筆時，事件 count 變為 0，但校準、Wi-Fi、claim secret 等其他 NVS key 不受影響。
 
 ## 失敗處理

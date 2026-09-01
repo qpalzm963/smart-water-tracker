@@ -29,6 +29,28 @@ jobs:
       - name: Run TypeScript Build
         run: npm run backend:build
 
+  app-test:
+    name: App Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run App Tests
+        run: npm run app:test
+
+      - name: Run App Build
+        run: npm run app:build
+
   firmware-build:
     name: ESP32 Firmware Build (PlatformIO)
     runs-on: ubuntu-latest

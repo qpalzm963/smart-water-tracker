@@ -6,11 +6,21 @@
 
 ## 📁 Monorepo 專案結構
 
-本專案採用 Monorepo 結構管理韌體、後端與教學工作坊：
+本專案採用 Monorepo 結構管理韌體、後端、前端 App 與教學工作坊：
 
 ```
 smart-water-tracker/
 ├── package.json              # 根目錄 npm workspace 設定
+├── app/                      # 📱 React + TypeScript + Vite 前端/客戶端 App (支援 Web Bluetooth)
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── vite.config.ts
+│   ├── src/
+│   │   ├── services/         # API 客戶端、BLE 協議通訊、離線同步佇列 (Offline Sync)
+│   │   ├── contexts/         # Auth, BLE, Water, Device 狀態管理
+│   │   ├── views/            # Dashboard, BLE 控制, 歷程, 統計, 裝置管理, 設定
+│   │   └── components/       # 導覽列與語意化功能元件
+│   └── tests/                # Vitest 單元測試
 ├── firmware/                 # 🔌 ESP32-C3 稱重感測韌體 (PlatformIO)
 │   ├── platformio.ini
 │   ├── include/
@@ -33,7 +43,20 @@ smart-water-tracker/
 
 ## ⚡ 快速開始
 
-### 1. 後端服務 (Backend)
+### 1. 前端客戶端 (App)
+
+```bash
+# 啟動前端開發伺服器 (預設 Port 5173，自動代理 /api 至後端)
+npm run app:dev
+
+# 執行前端自動化測試
+npm run app:test
+
+# 進行生產環境打包
+npm run app:build
+```
+
+### 2. 後端服務 (Backend)
 
 切換至 `backend` 目錄或在根目錄使用 npm scripts：
 

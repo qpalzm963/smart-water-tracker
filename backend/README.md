@@ -8,7 +8,7 @@
 
 - **零 C++ 編譯依賴**：採用 Node.js 24 原生 SQLite 模組 (`node:sqlite`)，記憶體佔用極低（約 35MB），無需 Python 或 Visual Studio build tools。
 - **雙重認證架構 (Dual Auth)**：
-  - **使用者**：Email + bcrypt 雜湊密碼 + 30 天 JWT Token，支援 Rate Limiting 防禦暴力破解。
+  - **使用者**：帳號（username）+ bcrypt 雜湊密碼 + 30 天 JWT Token，支援 Rate Limiting 防禦暴力破解。
   - **ESP32 裝置**：非對稱長效 **Device Token** (`dvt_...`)，支援遮罩顯示與即時輪換 (`/devices/:id/token/rotate`)。
 - **硬體佔有權防護 (Hardware Claiming Proof)**：
   - 裝置首次綁定支援 `claimCode`（由 ESP32 透過本機 BLE 提供、並保存於 NVS 的 16 位金鑰）。
@@ -21,7 +21,7 @@
   - 100% 透過 B-Tree 索引範圍掃描（`occurred_at >= ? AND occurred_at <= ?`）。
   - 日進度與達成率、7 日趨勢與日均量、30 日歷史與連續喝水天數 (Streak)。
 - **自動 Schema 遷移 (Fail-Closed Migration)**：
-  - 支援 `PRAGMA user_version` 自動無痛升級磁碟既有 DB。
+  - 支援 `PRAGMA user_version` 自動無痛升級磁碟既有 DB；舊 email 帳號會自動補上 username。
 - **單頁管理儀表板 (Web Dashboard)**：
   - 內建於 `/`，提供登入註冊、即時喝水進度環、在線綠點、Token 輪換與硬體事件模擬器。
 
