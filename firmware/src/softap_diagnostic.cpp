@@ -21,7 +21,7 @@ void setup() {
         if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
             Serial.println("[DIAG] client connected");
         } else if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) {
-            Serial.printf("[DIAG] client disconnected, reason=%d\n", info.wifi_ap_stadisconnected.reason);
+            Serial.printf("[DIAG] client disconnected, aid=%d\n", info.wifi_ap_stadisconnected.aid);
         }
     });
 

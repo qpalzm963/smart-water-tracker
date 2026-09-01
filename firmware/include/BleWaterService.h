@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <vector>
 
 #include "BleProtocol.h"
@@ -28,7 +30,8 @@ class WaterNetworkManager;
 // device.
 class BleWaterService {
 public:
-    explicit BleWaterService(const String& deviceId = "");
+    explicit BleWaterService(const String& deviceId = "", const String& prefsNamespace = PREFS_NAMESPACE);
+    ~BleWaterService();
 
     void begin(const String& deviceId, ScaleManager* scale = nullptr, DrinkTracker* tracker = nullptr, WaterNetworkManager* netManager = nullptr);
     void updateSummary(int todayTotalMl, int dailyGoalMl, float currentWeight = 0.0f, bool isStable = true);
@@ -45,6 +48,7 @@ public:
     // 事件備份的生命週期。begin() 會呼叫 restore；clear 供裝置重置與測試隔離使用。
     void restorePersistedEvents();
     void clearPersistedEvents();
+    bool acknowledgeEventsThrough(const String& throughEventId);
 
     std::vector<BleWaterEvent> eventsAfter(const String& afterEventId) const;
     String latestEventId() const;
@@ -63,21 +67,28 @@ private:
         PENDING_RESET_DAILY,
         PENDING_SET_TIME,
         PENDING_ROTATE_CLAIM,
+        PENDING_ACK_HISTORY,
+        PENDING_HISTORY_SYNC,
         PENDING_CONFIGURE_WIFI,
         PENDING_CLEAR_WIFI,
     };
 
+    struct PendingCommandEnvelope {
+        PendingCommand command = PENDING_NONE;
+        int64_t epoch = 0;
+        int32_t tzOffsetMinutes = 0;
+        char eventId[193] = {};
+        char wifiSsid[33] = {};
+        char wifiPass[65] = {};
+        char apiUrl[257] = {};
+        char devToken[193] = {};
+    };
+
     String _deviceId;
+    String _prefsNamespace;
     String _bootSessionId;
     String _claimSecret;
-    // payload 一律先寫，最後才寫 _pendingCommand —— 後者是「發佈」動作
-    volatile time_t _pendingEpoch = 0;
-    volatile int _pendingTzOffsetMinutes = 0;
-    String _pendingWifiSsid;
-    String _pendingWifiPass;
-    String _pendingApiUrl;
-    String _pendingDevToken;
-    volatile PendingCommand _pendingCommand = PENDING_NONE;
+    QueueHandle_t _commandQueue = nullptr;
     ScaleManager* _scale = nullptr;
     DrinkTracker* _tracker = nullptr;
     WaterNetworkManager* _netManager = nullptr;
@@ -87,6 +98,11 @@ private:
     uint32_t _nextSequence = 0;
     size_t _persistHead = 0;
     size_t _persistCount = 0;
+    uint32_t _persistGeneration = 0;
+    uint8_t _persistMetaSlot = 0;
+    bool _persistStateHealthy = true;
+    String _lastAckedEventId;
+    uint32_t _nextHistoryBatch = 0;
     int _todayTotalMl = 0;
     int _dailyGoalMl = 0;
     float _currentWeight = 0.0f;
@@ -95,14 +111,21 @@ private:
     class Impl;
     Impl* _impl = nullptr;
 
-    void persistEvent(const BleWaterEvent& event);
+    bool enqueueCommand(const PendingCommandEnvelope& envelope);
+    bool persistEvent(const BleWaterEvent& event);
+    bool commitPersistMetadata(size_t head, size_t count, const String& lastAckedEventId);
 
     void applyDeviceTime(time_t epoch, int tzOffsetMinutes);
     static bool isClockSynced();
 
     String eventJson(const BleWaterEvent& event) const;
+    String historyEventJson(const BleWaterEvent& event, const String& batchId, size_t sequence) const;
     String summaryJson() const;
     void publishLiveEvent(const BleWaterEvent& event);
     void replayAfter(const String& afterEventId);
-    void notifySyncComplete();
+    void notifySyncComplete(
+        const String& batchId,
+        size_t eventCount,
+        const String& firstEventId,
+        const String& lastEventId);
 };

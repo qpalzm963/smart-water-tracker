@@ -33,11 +33,11 @@ void DrinkTracker::begin() {
 
     // 此刻 ScaleManager 還沒跑過任何一次 update()，讀出來必定是 0。
     // 若拿它當基準重，秤上原本就放著的杯子會在第一次穩定時被結算成一次補水。
-    // 改由 TRACKER_UNKNOWN 等到第一筆穩定讀數再建立基準重與初始狀態。
+    // 改由 TRACKER_UNKNOWN 等到第一筆穩定的杯子重量再建立基準重與初始狀態。
     _baselineWeight = 0.0f;
     _state = TRACKER_UNKNOWN;
     _stateEntryTime = millis();
-    Serial.printf("[DrinkTracker] 追蹤器啟動. 等待第一筆穩定讀數以建立基準重 (目標: %dml)\n",
+    Serial.printf("[DrinkTracker] 追蹤器啟動. 等待第一筆穩定的杯子重量以建立基準重 (目標: %dml)\n",
                   _dailyGoalMl);
 }
 
@@ -78,9 +78,11 @@ void DrinkTracker::update() {
 
     switch (_state) {
         case TRACKER_UNKNOWN:
-            if (isStable) {
+            // 空秤的穩定讀值代表「目前沒有杯子」，不能當成喝水中的狀態。
+            // 必須等杯子放上來後才建立基準，否則空秤 0g -> 空杯重量會被判成補水。
+            if (isStable && currentWeight >= _emptyCupThreshold) {
                 _baselineWeight = currentWeight;
-                _state = (currentWeight >= _emptyCupThreshold) ? TRACKER_IDLE : TRACKER_DRINKING;
+                _state = TRACKER_IDLE;
                 _stateEntryTime = now;
             }
             break;

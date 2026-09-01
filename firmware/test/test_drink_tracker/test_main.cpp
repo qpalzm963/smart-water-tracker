@@ -83,6 +83,27 @@ void test_boot_with_cup_already_on_scale_emits_no_event() {
     TEST_ASSERT_EQUAL_INT(TRACKER_IDLE, tracker.getState());
 }
 
+// 開機時秤上沒有杯子，之後才放上空杯，也不能被判成補水。
+void test_boot_with_empty_scale_then_place_empty_cup_emits_no_event() {
+    FakeScale scale;
+    DrinkTracker tracker(scale);
+    tracker.onDrinkEvent(captureEvent);
+    g_eventCount = 0;
+
+    tracker.begin();
+
+    scale.weight = 0.0f;
+    scale.stable = true;
+    pump(tracker, 10, 50);
+    TEST_ASSERT_EQUAL_INT(TRACKER_UNKNOWN, tracker.getState());
+
+    scale.weight = tracker.getEmptyCupThreshold() + 275.0f;
+    pump(tracker, 60, 50);
+
+    TEST_ASSERT_EQUAL_INT(0, g_eventCount);
+    TEST_ASSERT_EQUAL_INT(TRACKER_IDLE, tracker.getState());
+}
+
 // 修掉上面的誤判之後，真正的喝水仍然要能被偵測到。
 void test_drink_is_detected_after_cup_returns() {
     FakeScale scale;
@@ -150,6 +171,7 @@ void setup() {
     delay(2000);
     UNITY_BEGIN();
     RUN_TEST(test_boot_with_cup_already_on_scale_emits_no_event);
+    RUN_TEST(test_boot_with_empty_scale_then_place_empty_cup_emits_no_event);
     RUN_TEST(test_drink_is_detected_after_cup_returns);
     RUN_TEST(test_daily_total_resets_after_reboot_across_midnight);
     RUN_TEST(test_daily_total_resets_when_clock_syncs_late);

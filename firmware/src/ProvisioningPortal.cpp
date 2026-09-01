@@ -53,8 +53,7 @@ void ProvisioningPortal::begin(const String& deviceId) {
         if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
             _impl->lastWifiEvent = "ap_client_connected";
         } else if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) {
-            _impl->lastWifiEvent = String("ap_client_disconnected_reason_") +
-                                   String(info.wifi_ap_stadisconnected.reason);
+            _impl->lastWifiEvent = "ap_client_disconnected";
         }
     });
     _setupSecret = loadOrCreateSetupSecret();
@@ -131,7 +130,7 @@ String ProvisioningPortal::getSetupSecret() const {
 }
 
 String ProvisioningPortal::getQrPayload() const {
-    StaticJsonDocument<192> document;
+    JsonDocument document;
     document["v"] = 1;
     document["deviceId"] = _deviceId;
     document["apSsid"] = _apSsid;
@@ -222,7 +221,7 @@ void ProvisioningPortal::handleStatus() {
 }
 
 void ProvisioningPortal::handleConfigure() {
-    StaticJsonDocument<512> document;
+    JsonDocument document;
     const DeserializationError error = deserializeJson(document, _impl->server.arg("plain"));
     if (error) {
         _impl->server.send(400, "application/json; charset=utf-8", "{\"error\":\"請提供有效 JSON\"}");
@@ -234,7 +233,7 @@ void ProvisioningPortal::handleConfigure() {
         String(document["apiBaseUrl"] | ""), String(document["deviceToken"] | "")};
     const ProvisioningValidationResult validation = validate(request);
     if (!validation.ok) {
-        StaticJsonDocument<192> response;
+        JsonDocument response;
         response["error"] = validation.error;
         String body;
         serializeJson(response, body);
@@ -261,7 +260,7 @@ void ProvisioningPortal::handlePortalPage() {
 }
 
 String ProvisioningPortal::statusJson() const {
-    StaticJsonDocument<384> document;
+    JsonDocument document;
     document["deviceId"] = _deviceId;
     document["apSsid"] = _apSsid;
     document["wifiConfigured"] = _networkManager.isConfigured();
