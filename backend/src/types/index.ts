@@ -2,6 +2,7 @@ import { Request } from 'express';
 
 export interface User {
   id: string;
+  username: string;
   email: string;
   password_hash: string;
   display_name: string | null;
@@ -12,6 +13,7 @@ export interface User {
 
 export interface UserResponse {
   id: string;
+  username: string;
   email: string;
   displayName: string | null;
   dailyGoalMl: number;
@@ -64,12 +66,14 @@ export interface DrinkRecordResponse {
 
 export interface JwtUserPayload {
   userId: string;
-  email: string;
+  username?: string;
+  email?: string;
 }
 
 export interface AuthenticatedRequest extends Request {
   user?: {
     id: string;
+    username?: string;
     email?: string;
   };
   device?: {

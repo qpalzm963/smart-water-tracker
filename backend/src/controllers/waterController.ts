@@ -69,7 +69,10 @@ const syncRecordSchema = z.object({
 const queryRecordsSchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
   type: z.enum(['drink', 'refill']).optional(),
+  eventType: z.enum(['drink', 'refill']).optional(),
   deviceId: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -139,6 +142,23 @@ export function recordWaterEvent(
     }
 
     const syncedAtIso = new Date().toISOString();
+
+    // A successful response stops device retry loops while keeping a record
+    // the user permanently deleted from being recreated.
+    if (payload.eventId) {
+      const deletedEvent = db
+        .prepare('SELECT 1 FROM deleted_water_events WHERE user_id = ? AND event_id = ?')
+        .get(userId, payload.eventId);
+
+      if (deletedEvent) {
+        res.status(200).json({
+          message: 'Record was permanently deleted and will not be recreated',
+          duplicated: true,
+          deleted: true,
+        });
+        return;
+      }
+    }
 
     // Idempotent deduplication check (strictly scoped by user_id to prevent cross-account leaks)
     if (payload.eventId) {
@@ -237,25 +257,39 @@ export function listRecords(
       return;
     }
 
-    const { from, to, type, deviceId, page, limit } = queryRecordsSchema.parse(req.query);
+    const {
+      from,
+      to,
+      startDate,
+      endDate,
+      type,
+      eventType,
+      deviceId,
+      page,
+      limit,
+    } = queryRecordsSchema.parse(req.query);
     const db = getDatabase();
+
+    const fromDate = from || startDate;
+    const toDate = to || endDate;
+    const recordType = type || eventType;
 
     const conditions: string[] = ['user_id = ?'];
     const params: (string | number)[] = [userId];
 
-    if (from) {
+    if (fromDate) {
       conditions.push('occurred_at >= ?');
-      params.push(from.includes('T') ? from : getTaipeiDayStartIso(from));
+      params.push(fromDate.includes('T') ? fromDate : getTaipeiDayStartIso(fromDate));
     }
 
-    if (to) {
+    if (toDate) {
       conditions.push('occurred_at <= ?');
-      params.push(to.includes('T') ? to : getTaipeiDayEndIso(to));
+      params.push(toDate.includes('T') ? toDate : getTaipeiDayEndIso(toDate));
     }
 
-    if (type) {
+    if (recordType) {
       conditions.push('event_type = ?');
-      params.push(type);
+      params.push(recordType);
     }
 
     if (deviceId) {
@@ -292,6 +326,53 @@ export function listRecords(
       },
     });
   } catch (err) {
+    next(err);
+  }
+}
+
+export function deleteRecord(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): void {
+  const userId = req.user?.id;
+  if (!userId) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const db = getDatabase();
+
+  try {
+    db.exec('BEGIN IMMEDIATE;');
+
+    const record = db
+      .prepare('SELECT id, event_id FROM drink_records WHERE id = ? AND user_id = ?')
+      .get(req.params.id, userId) as unknown as Pick<DrinkRecord, 'id' | 'event_id'> | undefined;
+
+    if (!record) {
+      db.exec('ROLLBACK;');
+      res.status(404).json({ error: 'Water record not found' });
+      return;
+    }
+
+    if (record.event_id) {
+      db.prepare(
+        `INSERT OR IGNORE INTO deleted_water_events (user_id, event_id)
+         VALUES (?, ?)`
+      ).run(userId, record.event_id);
+    }
+
+    db.prepare('DELETE FROM drink_records WHERE id = ? AND user_id = ?').run(record.id, userId);
+    db.exec('COMMIT;');
+
+    res.status(200).json({ success: true, message: 'Water record permanently deleted' });
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK;');
+    } catch {
+      // The transaction may have failed before it began.
+    }
     next(err);
   }
 }
@@ -378,7 +459,13 @@ export function getWeeklyStats(
     const goalMl = user?.daily_goal_ml || 2000;
 
     // Build 7 days array ending today
-    const days: { date: string; totalMl: number; goalMet: boolean }[] = [];
+    const days: {
+      date: string;
+      totalMl: number;
+      goalMet: boolean;
+      drinkCount: number;
+      refillCount: number;
+    }[] = [];
     const now = new Date();
 
     for (let i = 6; i >= 0; i--) {
@@ -388,25 +475,35 @@ export function getWeeklyStats(
         date: dateStr,
         totalMl: 0,
         goalMet: false,
+        drinkCount: 0,
+        refillCount: 0,
       });
     }
 
     const startIso = getTaipeiDayStartIso(days[0].date);
     const endIso = getTaipeiDayEndIso(days[6].date);
 
-    // Fetch only drink records in this 7-day range using database index
+    // Fetch drink and refill records in this 7-day range using the database index.
     const records = db
       .prepare(
-        `SELECT amount_ml, occurred_at FROM drink_records
-         WHERE user_id = ? AND event_type = 'drink' AND occurred_at >= ? AND occurred_at <= ?`
+        `SELECT event_type, amount_ml, occurred_at FROM drink_records
+         WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?`
       )
-      .all(userId, startIso, endIso) as unknown as Pick<DrinkRecord, 'amount_ml' | 'occurred_at'>[];
+      .all(userId, startIso, endIso) as unknown as Pick<DrinkRecord, 'event_type' | 'amount_ml' | 'occurred_at'>[];
 
     // Aggregate by Taipei date
     const dateMap = new Map<string, number>();
+    const countMap = new Map<string, { drinkCount: number; refillCount: number }>();
     for (const rec of records) {
       const dateStr = getTaipeiDateString(rec.occurred_at);
-      dateMap.set(dateStr, (dateMap.get(dateStr) || 0) + rec.amount_ml);
+      const counts = countMap.get(dateStr) || { drinkCount: 0, refillCount: 0 };
+      if (rec.event_type === 'drink') {
+        dateMap.set(dateStr, (dateMap.get(dateStr) || 0) + rec.amount_ml);
+        counts.drinkCount++;
+      } else if (rec.event_type === 'refill') {
+        counts.refillCount++;
+      }
+      countMap.set(dateStr, counts);
     }
 
     let totalWeekMl = 0;
@@ -416,6 +513,9 @@ export function getWeeklyStats(
       const totalMl = dateMap.get(day.date) || 0;
       day.totalMl = totalMl;
       day.goalMet = totalMl >= goalMl;
+      const counts = countMap.get(day.date);
+      day.drinkCount = counts?.drinkCount || 0;
+      day.refillCount = counts?.refillCount || 0;
 
       totalWeekMl += totalMl;
       if (day.goalMet) goalMetDays++;
@@ -454,7 +554,13 @@ export function getMonthlyStats(
     const goalMl = user?.daily_goal_ml || 2000;
 
     // Build 30 days array ending today
-    const days: { date: string; totalMl: number; goalMet: boolean }[] = [];
+    const days: {
+      date: string;
+      totalMl: number;
+      goalMet: boolean;
+      drinkCount: number;
+      refillCount: number;
+    }[] = [];
     const now = new Date();
 
     for (let i = 29; i >= 0; i--) {
@@ -464,24 +570,34 @@ export function getMonthlyStats(
         date: dateStr,
         totalMl: 0,
         goalMet: false,
+        drinkCount: 0,
+        refillCount: 0,
       });
     }
 
     const startIso = getTaipeiDayStartIso(days[0].date);
     const endIso = getTaipeiDayEndIso(days[29].date);
 
-    // Fetch only drink records in this 30-day range using database index
+    // Fetch drink and refill records in this 30-day range using the database index.
     const records = db
       .prepare(
-        `SELECT amount_ml, occurred_at FROM drink_records
-         WHERE user_id = ? AND event_type = 'drink' AND occurred_at >= ? AND occurred_at <= ?`
+        `SELECT event_type, amount_ml, occurred_at FROM drink_records
+         WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?`
       )
-      .all(userId, startIso, endIso) as unknown as Pick<DrinkRecord, 'amount_ml' | 'occurred_at'>[];
+      .all(userId, startIso, endIso) as unknown as Pick<DrinkRecord, 'event_type' | 'amount_ml' | 'occurred_at'>[];
 
     const dateMap = new Map<string, number>();
+    const countMap = new Map<string, { drinkCount: number; refillCount: number }>();
     for (const rec of records) {
       const dateStr = getTaipeiDateString(rec.occurred_at);
-      dateMap.set(dateStr, (dateMap.get(dateStr) || 0) + rec.amount_ml);
+      const counts = countMap.get(dateStr) || { drinkCount: 0, refillCount: 0 };
+      if (rec.event_type === 'drink') {
+        dateMap.set(dateStr, (dateMap.get(dateStr) || 0) + rec.amount_ml);
+        counts.drinkCount++;
+      } else if (rec.event_type === 'refill') {
+        counts.refillCount++;
+      }
+      countMap.set(dateStr, counts);
     }
 
     let totalMonthMl = 0;
@@ -489,6 +605,9 @@ export function getMonthlyStats(
       const totalMl = dateMap.get(day.date) || 0;
       day.totalMl = totalMl;
       day.goalMet = totalMl >= goalMl;
+      const counts = countMap.get(day.date);
+      day.drinkCount = counts?.drinkCount || 0;
+      day.refillCount = counts?.refillCount || 0;
       totalMonthMl += totalMl;
     }
 

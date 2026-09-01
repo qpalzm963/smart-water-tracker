@@ -2,12 +2,20 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config/env';
+import {
+  USERNAME_MAX_LENGTH,
+  USERNAME_MIN_LENGTH,
+  normalizeUsername,
+  usernameFromLegacyEmail,
+} from '../utils/username';
 
 let dbInstance: DatabaseSync | null = null;
 
 const DEFAULT_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
   id            TEXT PRIMARY KEY,
+  username      TEXT UNIQUE NOT NULL,
+  -- Kept for backwards compatibility with accounts created before username login.
   email         TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   display_name  TEXT,
@@ -39,8 +47,16 @@ CREATE TABLE IF NOT EXISTS drink_records (
   UNIQUE(user_id, event_id)
 );
 
+CREATE TABLE IF NOT EXISTS deleted_water_events (
+  user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  event_id       TEXT NOT NULL,
+  deleted_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, event_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_records_user_date ON drink_records(user_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_records_user_event ON drink_records(user_id, event_id);
+CREATE INDEX IF NOT EXISTS idx_deleted_water_events_user ON deleted_water_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id);
 CREATE INDEX IF NOT EXISTS idx_devices_token ON devices(device_token);
 `;
@@ -114,7 +130,70 @@ export function migrateDatabase(db: DatabaseSync): void {
       }
     }
 
-    db.exec('PRAGMA user_version = 2;');
+    if (currentVersion < 3) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS deleted_water_events (
+          user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          event_id       TEXT NOT NULL,
+          deleted_at     TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (user_id, event_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_deleted_water_events_user
+        ON deleted_water_events(user_id);
+      `);
+    }
+
+    if (currentVersion < 4) {
+      // Add the canonical account name without deleting legacy email data.
+      const usersTableExists = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+        .get();
+
+      if (usersTableExists) {
+        const userCols = db.prepare("PRAGMA table_info('users');").all() as unknown as { name: string }[];
+        const hasUsername = userCols.some((col) => col.name === 'username');
+        if (!hasUsername) {
+          db.exec('ALTER TABLE users ADD COLUMN username TEXT;');
+        }
+
+        const users = db
+          .prepare('SELECT id, email, username FROM users ORDER BY rowid')
+          .all() as unknown as Array<{ id: string; email: string | null; username: string | null }>;
+        const usedNames = new Set<string>();
+        const updateUsername = db.prepare('UPDATE users SET username = ? WHERE id = ?');
+
+        for (const user of users) {
+          const rawName = user.username || usernameFromLegacyEmail(user.email, user.id);
+          let baseName = normalizeUsername(rawName)
+            .replace(/[^\p{L}\p{N}._-]+/gu, '_')
+            .replace(/^[._-]+|[._-]+$/gu, '');
+
+          if (!baseName || !/^[\p{L}\p{N}]/u.test(baseName)) {
+            baseName = usernameFromLegacyEmail(user.email, user.id);
+          }
+          if (baseName.length < USERNAME_MIN_LENGTH) {
+            baseName = `${baseName}_user`;
+          }
+          baseName = baseName.slice(0, USERNAME_MAX_LENGTH);
+
+          let candidate = baseName;
+          let suffix = 2;
+          while (usedNames.has(candidate)) {
+            const suffixText = `_${suffix}`;
+            candidate = `${baseName.slice(0, USERNAME_MAX_LENGTH - suffixText.length)}${suffixText}`;
+            suffix += 1;
+          }
+
+          usedNames.add(candidate);
+          updateUsername.run(candidate, user.id);
+        }
+
+        db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username);');
+      }
+    }
+
+    db.exec('PRAGMA user_version = 4;');
   } catch (err) {
     console.error('[FATAL Database Migration Error]', err);
     throw new Error(`Database migration failed: ${err instanceof Error ? err.message : String(err)}`);

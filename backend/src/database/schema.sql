@@ -1,6 +1,8 @@
 -- Users Table
 CREATE TABLE IF NOT EXISTS users (
   id            TEXT PRIMARY KEY,
+  username      TEXT UNIQUE NOT NULL,
+  -- Kept for backwards compatibility with accounts created before username login.
   email         TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   display_name  TEXT,
@@ -34,8 +36,18 @@ CREATE TABLE IF NOT EXISTS drink_records (
   UNIQUE(user_id, event_id)
 );
 
+-- Minimal tombstones prevent a permanently deleted device event from being
+-- recreated when the device retries an already-synced upload.
+CREATE TABLE IF NOT EXISTS deleted_water_events (
+  user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  event_id       TEXT NOT NULL,
+  deleted_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, event_id)
+);
+
 -- Performance & Security Indexes
 CREATE INDEX IF NOT EXISTS idx_records_user_date ON drink_records(user_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_records_user_event ON drink_records(user_id, event_id);
+CREATE INDEX IF NOT EXISTS idx_deleted_water_events_user ON deleted_water_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id);
 CREATE INDEX IF NOT EXISTS idx_devices_token ON devices(device_token);

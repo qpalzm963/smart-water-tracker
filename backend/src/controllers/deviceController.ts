@@ -4,12 +4,18 @@ import { z } from 'zod';
 import { getDatabase } from '../database/db';
 import { AuthenticatedRequest, Device, DeviceResponse } from '../types';
 
-const bindDeviceSchema = z.object({
-  deviceId: z.string().min(3, 'Device ID must be at least 3 characters'),
-  claimCode: z.string().optional(),
-  newClaimCode: z.string().min(1, 'New claim code must not be empty').optional(),
-  name: z.string().optional(),
-});
+const bindDeviceSchema = z
+  .object({
+    deviceId: z.string().min(3, 'Device ID must be at least 3 characters').optional(),
+    id: z.string().min(3, 'Device ID must be at least 3 characters').optional(),
+    claimCode: z.string().optional(),
+    newClaimCode: z.string().min(1, 'New claim code must not be empty').optional(),
+    name: z.string().optional(),
+  })
+  .refine((input) => Boolean(input.deviceId || input.id), {
+    path: ['deviceId'],
+    message: 'Device ID must be at least 3 characters',
+  });
 
 function isDeviceOnline(lastSeenAt: string | null): boolean {
   if (!lastSeenAt) return false;
@@ -32,7 +38,8 @@ export function bindDevice(req: AuthenticatedRequest, res: Response, next: NextF
       return;
     }
 
-    const { deviceId, claimCode, newClaimCode, name } = bindDeviceSchema.parse(req.body);
+    const { deviceId: rawDeviceId, id: rawId, claimCode, newClaimCode, name } = bindDeviceSchema.parse(req.body);
+    const deviceId = (rawDeviceId || rawId)!;
     const db = getDatabase();
 
     const existingDevice = db.prepare('SELECT * FROM devices WHERE id = ?').get(deviceId) as unknown as

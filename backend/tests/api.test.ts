@@ -11,7 +11,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
   let userToken: string;
   let userId: string;
   let deviceToken: string;
-  const testEmail = `tester_${Date.now()}@example.com`;
+  const testUsername = `tester_${Date.now()}`;
   const testPassword = 'Password123!';
   const testDeviceId = `water_test_${Date.now().toString(16)}`;
 
@@ -38,7 +38,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
   describe('2. User Authentication & Profile', () => {
     it('POST /api/v1/auth/register should register a new user and return JWT', async () => {
       const res = await request(app).post('/api/v1/auth/register').send({
-        email: testEmail,
+        username: testUsername,
         password: testPassword,
         displayName: '水水測試員',
       });
@@ -46,7 +46,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
       expect(res.status).toBe(201);
       expect(res.body).toHaveProperty('token');
       expect(res.body.user).toHaveProperty('id');
-      expect(res.body.user.email).toBe(testEmail);
+      expect(res.body.user.username).toBe(testUsername);
       expect(res.body.user.displayName).toBe('水水測試員');
       expect(res.body.user.dailyGoalMl).toBe(2000);
 
@@ -54,9 +54,9 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
       userId = res.body.user.id;
     });
 
-    it('POST /api/v1/auth/register should reject duplicate email', async () => {
+    it('POST /api/v1/auth/register should reject duplicate username', async () => {
       const res = await request(app).post('/api/v1/auth/register').send({
-        email: testEmail,
+        username: testUsername,
         password: testPassword,
       });
 
@@ -66,7 +66,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
 
     it('POST /api/v1/auth/login should authenticate with correct credentials', async () => {
       const res = await request(app).post('/api/v1/auth/login').send({
-        email: testEmail,
+        username: testUsername,
         password: testPassword,
       });
 
@@ -75,9 +75,35 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
       expect(res.body.user.id).toBe(userId);
     });
 
+    it('POST /api/v1/auth/login should treat account names case-insensitively', async () => {
+      const res = await request(app).post('/api/v1/auth/login').send({
+        username: testUsername.toUpperCase(),
+        password: testPassword,
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.user.username).toBe(testUsername);
+    });
+
+    it('keeps legacy email credentials working during the username migration', async () => {
+      const legacyEmail = `legacy_${Date.now()}@example.com`;
+      const registerRes = await request(app).post('/api/v1/auth/register').send({
+        email: legacyEmail,
+        password: testPassword,
+      });
+      expect(registerRes.status).toBe(201);
+
+      const loginRes = await request(app).post('/api/v1/auth/login').send({
+        email: legacyEmail,
+        password: testPassword,
+      });
+      expect(loginRes.status).toBe(200);
+      expect(loginRes.body.user.username).toBe(legacyEmail.split('@')[0]);
+    });
+
     it('POST /api/v1/auth/login should reject wrong password', async () => {
       const res = await request(app).post('/api/v1/auth/login').send({
-        email: testEmail,
+        username: testUsername,
         password: 'wrong_password',
       });
 
@@ -96,7 +122,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.user.id).toBe(userId);
-      expect(res.body.user.email).toBe(testEmail);
+      expect(res.body.user.username).toBe(testUsername);
     });
 
     it('PUT /api/v1/user/me should update user daily goal', async () => {
@@ -429,6 +455,68 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
       expect(res1Dup.body.record.amountMl).toBe(250);
     });
 
+    it('permanently deletes an owned record and suppresses the same event on re-upload', async () => {
+      const deletedEventId = `evt_deleted_${Date.now()}`;
+      const createRes = await request(app)
+        .post('/api/v1/water/records')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({
+          eventId: deletedEventId,
+          amountMl: 175,
+          occurredAt: new Date().toISOString(),
+        });
+
+      expect(createRes.status).toBe(201);
+      const recordId = createRes.body.record.id;
+
+      const statsBeforeDelete = await request(app)
+        .get('/api/v1/water/stats/daily')
+        .set('Authorization', `Bearer ${userToken}`);
+
+      const unauthenticatedDelete = await request(app).delete(
+        `/api/v1/water/records/${recordId}`
+      );
+      expect(unauthenticatedDelete.status).toBe(401);
+
+      const crossTenantDelete = await request(app)
+        .delete(`/api/v1/water/records/${recordId}`)
+        .set('Authorization', `Bearer ${user2Token}`);
+      expect(crossTenantDelete.status).toBe(404);
+
+      const deleteRes = await request(app)
+        .delete(`/api/v1/water/records/${recordId}`)
+        .set('Authorization', `Bearer ${userToken}`);
+      expect(deleteRes.status).toBe(200);
+      expect(deleteRes.body.success).toBe(true);
+
+      const statsAfterDelete = await request(app)
+        .get('/api/v1/water/stats/daily')
+        .set('Authorization', `Bearer ${userToken}`);
+      expect(statsAfterDelete.body.totalMl).toBe(statsBeforeDelete.body.totalMl - 175);
+
+      const reuploadRes = await request(app)
+        .post('/api/v1/water/records')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({
+          eventId: deletedEventId,
+          amountMl: 175,
+          occurredAt: new Date().toISOString(),
+        });
+      expect(reuploadRes.status).toBe(200);
+      expect(reuploadRes.body.deleted).toBe(true);
+      expect(reuploadRes.body.record).toBeUndefined();
+
+      const listRes = await request(app)
+        .get('/api/v1/water/records?limit=100')
+        .set('Authorization', `Bearer ${userToken}`);
+      expect(listRes.body.records.some((record: { id: string }) => record.id === recordId)).toBe(false);
+
+      const repeatedDelete = await request(app)
+        .delete(`/api/v1/water/records/${recordId}`)
+        .set('Authorization', `Bearer ${userToken}`);
+      expect(repeatedDelete.status).toBe(404);
+    });
+
     it('Hardware Claiming: transfers ownership using the BLE-rotated replacement secret', async () => {
       const claimDeviceId = `water_claim_${Date.now().toString(16)}`;
       const oldClaimCode = 'CLAIM_SECRET_987';
@@ -551,7 +639,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
     });
   });
 
-  describe('9. Database Migration & Schema Evolution (v1 to v2)', () => {
+  describe('9. Database Migration & Schema Evolution (v1 to v4)', () => {
     const tempDbPath = path.resolve(__dirname, `test_migration_${Date.now()}.db`);
 
     afterAll(() => {
@@ -560,7 +648,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
       }
     });
 
-    it('migrates legacy v1 database to v2 with multi-tenant event uniqueness and claim_code', () => {
+    it('migrates legacy v1 database to v4 with usernames, event tombstones, multi-tenant uniqueness and claim_code', () => {
       const legacyDb = new DatabaseSync(tempDbPath);
       legacyDb.exec('PRAGMA foreign_keys = OFF;');
 
@@ -608,15 +696,27 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
       // 3. Execute migration
       migrateDatabase(legacyDb);
 
-      // 4. Verify user_version is 2
+      // 4. Verify user_version is 4
       const versionRow = legacyDb.prepare('PRAGMA user_version;').get() as unknown as { user_version: number };
-      expect(versionRow.user_version).toBe(2);
+      expect(versionRow.user_version).toBe(4);
 
-      // 5. Verify claim_code column exists in devices table
+      // 5. Existing email accounts receive a stable username during migration.
+      const migratedUser = legacyDb
+        .prepare('SELECT username FROM users WHERE id = ?')
+        .get('u1') as unknown as { username: string };
+      expect(migratedUser.username).toBe('u1_user');
+
+      // 6. Verify claim_code column exists in devices table
       const deviceCols = legacyDb.prepare("PRAGMA table_info('devices');").all() as unknown as { name: string }[];
       expect(deviceCols.some((c) => c.name === 'claim_code')).toBe(true);
 
-      // 6. Verify cross-tenant event isolation: User 2 CAN insert same 'evt_shared_v1' without UNIQUE constraint violation
+      // 7. Verify permanent-deletion tombstones are available after migration
+      const tombstoneTable = legacyDb
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'deleted_water_events'")
+        .get() as unknown as { name: string } | undefined;
+      expect(tombstoneTable?.name).toBe('deleted_water_events');
+
+      // 8. Verify cross-tenant event isolation: User 2 CAN insert same 'evt_shared_v1' without UNIQUE constraint violation
       expect(() => {
         legacyDb.prepare(`
           INSERT INTO drink_records (id, event_id, user_id, amount_ml, occurred_at)
@@ -624,7 +724,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
         `).run();
       }).not.toThrow();
 
-      // 7. Verify within-user duplicate still fails unique constraint
+      // 9. Verify within-user duplicate still fails unique constraint
       expect(() => {
         legacyDb.prepare(`
           INSERT INTO drink_records (id, event_id, user_id, amount_ml, occurred_at)

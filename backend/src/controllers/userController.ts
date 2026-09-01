@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { getDatabase } from '../database/db';
 import { AuthenticatedRequest, User, UserResponse } from '../types';
+import { usernameFromLegacyEmail } from '../utils/username';
 
 const updateProfileSchema = z.object({
   displayName: z.string().optional(),
@@ -25,6 +26,7 @@ export function getProfile(req: AuthenticatedRequest, res: Response, next: NextF
 
     const response: UserResponse = {
       id: user.id,
+      username: user.username || usernameFromLegacyEmail(user.email, user.id),
       email: user.email,
       displayName: user.display_name,
       dailyGoalMl: user.daily_goal_ml,
@@ -66,6 +68,7 @@ export function updateProfile(req: AuthenticatedRequest, res: Response, next: Ne
 
     const response: UserResponse = {
       id: userId,
+      username: currentUser.username || usernameFromLegacyEmail(currentUser.email, currentUser.id),
       email: currentUser.email,
       displayName: updatedDisplayName,
       dailyGoalMl: updatedDailyGoal,
