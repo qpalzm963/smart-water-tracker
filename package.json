@@ -4,12 +4,18 @@
   "private": true,
   "description": "Smart Water Tracker monorepo: ESP32-C3 firmware + Node.js/TypeScript backend",
   "workspaces": [
-    "backend"
+    "backend",
+    "app"
   ],
   "scripts": {
+    "dev": "npm --workspace=backend run dev",
+    "test": "npm run app:test && npm run backend:test",
     "backend:dev": "npm --workspace=backend run dev",
     "backend:build": "npm --workspace=backend run build",
     "backend:test": "npm --workspace=backend run test",
-    "backend:start": "npm --workspace=backend start"
+    "backend:start": "npm --workspace=backend start",
+    "app:dev": "npm --workspace=app run dev",
+    "app:build": "npm --workspace=app run build",
+    "app:test": "npm --workspace=app run test"
   }
 }

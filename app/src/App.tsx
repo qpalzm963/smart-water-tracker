@@ -7,10 +7,9 @@ import { ActiveTab, Navbar } from './components/Navbar';
 import { Toast } from './components/Toast';
 import { AuthView } from './views/AuthView';
 import { DashboardView } from './views/DashboardView';
-import { BleDeviceView } from './views/BleDeviceView';
+import { DeviceCenterView } from './views/DeviceCenterView';
 import { HistoryView } from './views/HistoryView';
 import { StatsView } from './views/StatsView';
-import { DevicesView } from './views/DevicesView';
 import { SettingsView } from './views/SettingsView';
 import './App.css';
 
@@ -68,10 +67,11 @@ const MainLayout: React.FC = () => {
         {activeTab === 'dashboard' && (
           <DashboardView showToast={showToast} onNavigate={setActiveTab} />
         )}
-        {activeTab === 'ble' && <BleDeviceView showToast={showToast} />}
+        {(activeTab === 'ble' || activeTab === 'devices') && (
+          <DeviceCenterView showToast={showToast} />
+        )}
         {activeTab === 'history' && <HistoryView showToast={showToast} />}
         {activeTab === 'stats' && <StatsView showToast={showToast} />}
-        {activeTab === 'devices' && <DevicesView showToast={showToast} />}
         {activeTab === 'settings' && <SettingsView showToast={showToast} />}
       </main>
       <Toast

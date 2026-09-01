@@ -33,7 +33,7 @@ interface NavItem {
 const items: NavItem[] = [
   { label: '首頁', tab: 'dashboard', icon: House },
   { label: '統計', tab: 'stats', icon: ChartNoAxesColumnIncreasing },
-  { label: '裝置', tab: 'devices', icon: Cpu },
+  { label: '裝置中心', tab: 'devices', icon: Cpu },
   { label: '我的', tab: 'settings', icon: UserRound },
 ];
 

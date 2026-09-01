@@ -146,7 +146,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           goalMl={goalMl}
           percent={percent}
           ble={bleDisplay}
-          onOpenBle={() => onNavigate('ble')}
+          onOpenBle={() => onNavigate('devices')}
         />
         <div className="dashboard-workspace__side">
           <QuickDrinkGrid
