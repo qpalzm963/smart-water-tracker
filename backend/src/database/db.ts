@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS drink_records (
   amount_ml      INTEGER NOT NULL,
   remaining_ml   INTEGER,
   occurred_at    TEXT NOT NULL,
+  time_synced    INTEGER NOT NULL DEFAULT 1,
   synced_at      TEXT DEFAULT (datetime('now')),
   UNIQUE(user_id, event_id)
 );
@@ -101,12 +102,13 @@ export function migrateDatabase(db: DatabaseSync): void {
             amount_ml      INTEGER NOT NULL,
             remaining_ml   INTEGER,
             occurred_at    TEXT NOT NULL,
+            time_synced    INTEGER NOT NULL DEFAULT 1,
             synced_at      TEXT DEFAULT (datetime('now')),
             UNIQUE(user_id, event_id)
           );
 
-          INSERT OR IGNORE INTO drink_records_v2 (id, event_id, user_id, device_id, event_type, amount_ml, remaining_ml, occurred_at, synced_at)
-          SELECT id, event_id, user_id, device_id, event_type, amount_ml, remaining_ml, occurred_at, synced_at
+          INSERT OR IGNORE INTO drink_records_v2 (id, event_id, user_id, device_id, event_type, amount_ml, remaining_ml, occurred_at, time_synced, synced_at)
+          SELECT id, event_id, user_id, device_id, event_type, amount_ml, remaining_ml, occurred_at, 1, synced_at
           FROM drink_records;
 
           DROP TABLE drink_records;
@@ -193,7 +195,57 @@ export function migrateDatabase(db: DatabaseSync): void {
       }
     }
 
-    db.exec('PRAGMA user_version = 4;');
+    if (currentVersion < 5) {
+      const recordsTableExists = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='drink_records'")
+        .get();
+
+      if (recordsTableExists) {
+        const recordCols = db
+          .prepare("PRAGMA table_info('drink_records');")
+          .all() as unknown as { name: string }[];
+        const hasTimeSynced = recordCols.some((col) => col.name === 'time_synced');
+        if (!hasTimeSynced) {
+          db.exec('ALTER TABLE drink_records ADD COLUMN time_synced INTEGER NOT NULL DEFAULT 1;');
+        }
+
+        // Firmware event IDs encode an occurredAt value after the device ID.
+        // A zero value means the cup had no trustworthy clock when the event
+        // was created; preserve those rows but exclude them from date-based
+        // statistics after this migration.
+        const devicesTableExists = db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='devices'")
+          .get();
+        if (devicesTableExists) {
+          const deviceIds = db
+            .prepare('SELECT id FROM devices')
+            .all() as unknown as Array<{ id: string }>;
+          const unknownEventIds = new Set(
+            deviceIds.map((device) => `${device.id}-0-`),
+          );
+          const records = db
+            .prepare(
+              `SELECT id, event_id, device_id
+               FROM drink_records
+               WHERE event_id IS NOT NULL AND device_id IS NOT NULL`
+            )
+            .all() as unknown as Array<{ id: string; event_id: string; device_id: string }>;
+          const markUnknown = db.prepare('UPDATE drink_records SET time_synced = 0 WHERE id = ?');
+
+          for (const record of records) {
+            if (unknownEventIds.has(`${record.device_id}-0-`) && record.event_id.startsWith(`${record.device_id}-0-`)) {
+              markUnknown.run(record.id);
+            }
+          }
+        }
+
+        db.exec(
+          'CREATE INDEX IF NOT EXISTS idx_records_user_time_synced ON drink_records(user_id, time_synced, occurred_at);',
+        );
+      }
+    }
+
+    db.exec('PRAGMA user_version = 5;');
   } catch (err) {
     console.error('[FATAL Database Migration Error]', err);
     throw new Error(`Database migration failed: ${err instanceof Error ? err.message : String(err)}`);

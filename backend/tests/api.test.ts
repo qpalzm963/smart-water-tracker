@@ -258,7 +258,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
       expect(res.body.record.amountMl).toBe(400);
     });
 
-    it('POST /api/v1/water/records should handle timeSynced: false with server timestamp fallback', async () => {
+    it('POST /api/v1/water/records should preserve server sync time while marking unsynced events', async () => {
       const unsyncedEventId = `${testDeviceId}-unsynced-2`;
       const res = await request(app)
         .post('/api/v1/water/records')
@@ -274,6 +274,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
       expect(res.status).toBe(201);
       expect(res.body.record.occurredAt).toBeDefined();
       expect(new Date(res.body.record.occurredAt).getFullYear()).toBeGreaterThanOrEqual(2025);
+      expect(res.body.record.timeSynced).toBe(false);
     });
 
     it('GET /api/v1/water/records should list records for user with pagination and date filter', async () => {
@@ -282,7 +283,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
         .set('Authorization', `Bearer ${userToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.records.length).toBe(3); // 2 drinks + 1 refill
+      expect(res.body.records.length).toBe(3); // 1 synced drink + 1 refill + 1 unsynced drink
       expect(res.body.pagination.total).toBe(3);
     });
   });
@@ -294,12 +295,13 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
         .set('Authorization', `Bearer ${userToken}`);
 
       expect(res.status).toBe(200);
-      // Total drink = 300ml + 200ml = 500ml. Refill (400ml) is excluded from totalMl.
-      expect(res.body.totalMl).toBe(500);
+      // The unsynced 200ml event is retained in history but excluded because
+      // its server timestamp is not the event's trustworthy occurredAt.
+      expect(res.body.totalMl).toBe(300);
       expect(res.body.goalMl).toBe(2500);
-      expect(res.body.progress).toBe(0.2); // 500 / 2500 = 0.2
+      expect(res.body.progress).toBe(0.12); // 300 / 2500 = 0.12
       expect(res.body.goalMet).toBe(false);
-      expect(res.body.drinkCount).toBe(2);
+      expect(res.body.drinkCount).toBe(1);
       expect(res.body.refillCount).toBe(1);
     });
 
@@ -329,7 +331,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.days.length).toBe(7);
-      expect(res.body.totalWeekMl).toBe(500);
+      expect(res.body.totalWeekMl).toBe(300);
       expect(typeof res.body.averageMl).toBe('number');
       expect(typeof res.body.goalMetDays).toBe('number');
     });
@@ -639,7 +641,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
     });
   });
 
-  describe('9. Database Migration & Schema Evolution (v1 to v4)', () => {
+  describe('9. Database Migration & Schema Evolution (v1 to v5)', () => {
     const tempDbPath = path.resolve(__dirname, `test_migration_${Date.now()}.db`);
 
     afterAll(() => {
@@ -648,7 +650,7 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
       }
     });
 
-    it('migrates legacy v1 database to v4 with usernames, event tombstones, multi-tenant uniqueness and claim_code', () => {
+    it('migrates legacy v1 database to v5 with usernames, event tombstones, multi-tenant uniqueness, claim_code and time flags', () => {
       const legacyDb = new DatabaseSync(tempDbPath);
       legacyDb.exec('PRAGMA foreign_keys = OFF;');
 
@@ -690,15 +692,15 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
       legacyDb.exec(`
         INSERT INTO users (id, email, password_hash) VALUES ('u1', 'u1@test.com', 'hash1'), ('u2', 'u2@test.com', 'hash2');
         INSERT INTO devices (id, user_id, device_token) VALUES ('dev1', 'u1', 'tok1');
-        INSERT INTO drink_records (id, event_id, user_id, amount_ml, occurred_at) VALUES ('rec1', 'evt_shared_v1', 'u1', 200, '2026-08-24T10:00:00.000Z');
+        INSERT INTO drink_records (id, event_id, user_id, device_id, amount_ml, occurred_at) VALUES ('rec1', 'dev1-0-session-0', 'u1', 'dev1', 200, '2026-08-24T10:00:00.000Z');
       `);
 
       // 3. Execute migration
       migrateDatabase(legacyDb);
 
-      // 4. Verify user_version is 4
+      // 4. Verify user_version is 5
       const versionRow = legacyDb.prepare('PRAGMA user_version;').get() as unknown as { user_version: number };
-      expect(versionRow.user_version).toBe(4);
+      expect(versionRow.user_version).toBe(5);
 
       // 5. Existing email accounts receive a stable username during migration.
       const migratedUser = legacyDb
@@ -716,19 +718,27 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
         .get() as unknown as { name: string } | undefined;
       expect(tombstoneTable?.name).toBe('deleted_water_events');
 
-      // 8. Verify cross-tenant event isolation: User 2 CAN insert same 'evt_shared_v1' without UNIQUE constraint violation
+      // 8. Existing zero-timestamp firmware events are retained but marked
+      // as unknown-time so they cannot be counted against a calendar day.
+      const migratedRecord = legacyDb
+        .prepare('SELECT time_synced FROM drink_records WHERE id = ?')
+        .get('rec1') as unknown as { time_synced: number };
+      expect(migratedRecord.time_synced).toBe(0);
+
+      // 9. Verify cross-tenant event isolation: User 2 CAN insert the same
+      // event ID without UNIQUE constraint violation.
       expect(() => {
         legacyDb.prepare(`
           INSERT INTO drink_records (id, event_id, user_id, amount_ml, occurred_at)
-          VALUES ('rec2', 'evt_shared_v1', 'u2', 300, '2026-08-24T10:05:00.000Z')
+          VALUES ('rec2', 'dev1-0-session-0', 'u2', 300, '2026-08-24T10:05:00.000Z')
         `).run();
       }).not.toThrow();
 
-      // 9. Verify within-user duplicate still fails unique constraint
+      // 10. Verify within-user duplicate still fails unique constraint
       expect(() => {
         legacyDb.prepare(`
           INSERT INTO drink_records (id, event_id, user_id, amount_ml, occurred_at)
-          VALUES ('rec3', 'evt_shared_v1', 'u1', 200, '2026-08-24T10:10:00.000Z')
+          VALUES ('rec3', 'dev1-0-session-0', 'u1', 200, '2026-08-24T10:10:00.000Z')
         `).run();
       }).toThrow();
 

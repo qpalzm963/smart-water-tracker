@@ -46,6 +46,7 @@ describe('dashboardViewModel', () => {
       { id: 'new', occurredAt: '2026-08-27T13:45:00Z' },
       { id: 'mid', occurredAt: '2026-08-27T11:00:00Z' },
       { id: 'latest', occurredAt: '2026-08-27T15:30:00Z' },
+      { id: 'unknown-time', occurredAt: '2026-08-27T15:45:00Z', timeSynced: false },
       { id: 'yesterday', occurredAt: '2026-08-26T08:00:00Z' },
     ] as DrinkRecord[];
 

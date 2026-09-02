@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS drink_records (
   amount_ml      INTEGER NOT NULL,
   remaining_ml   INTEGER,
   occurred_at    TEXT NOT NULL,          -- ISO 8601 UTC string
+  time_synced    INTEGER NOT NULL DEFAULT 1, -- 1 when occurred_at is trustworthy, 0 when unknown
   synced_at      TEXT DEFAULT (datetime('now')),
   UNIQUE(user_id, event_id)
 );
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS deleted_water_events (
 
 -- Performance & Security Indexes
 CREATE INDEX IF NOT EXISTS idx_records_user_date ON drink_records(user_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_records_user_time_synced ON drink_records(user_id, time_synced, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_records_user_event ON drink_records(user_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_deleted_water_events_user ON deleted_water_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id);

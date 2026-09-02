@@ -67,6 +67,8 @@ export interface DrinkRecord {
   amountMl: number;
   remainingMl: number | null;
   occurredAt: string;
+  /** False when the cup did not have a trustworthy clock for this event. */
+  timeSynced?: boolean;
   syncedAt: string;
 }
 

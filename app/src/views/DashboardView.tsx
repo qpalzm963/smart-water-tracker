@@ -20,6 +20,7 @@ import { QuickDrinkGrid } from './dashboard/QuickDrinkGrid';
 import { TechDashboardHeader } from './dashboard/TechDashboardHeader';
 import { TodayRecordsCard } from './dashboard/TodayRecordsCard';
 import { DrinkRecord } from '../types';
+import { formatRecordDateLabel } from '../utils/recordDisplay';
 
 interface DashboardViewProps {
   showToast: (msg: string, type?: 'success' | 'error' | 'info') => void;
@@ -101,7 +102,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   const handleDeleteRecord = async (record: DrinkRecord) => {
-    const occurredAtLabel = new Date(record.occurredAt).toLocaleString();
+    const occurredAtLabel = formatRecordDateLabel(record);
     if (!window.confirm(`確定要永久刪除 ${occurredAtLabel} 的喝水紀錄嗎？刪除後無法復原。`)) {
       return;
     }

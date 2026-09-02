@@ -49,6 +49,7 @@ export interface DrinkRecord {
   amount_ml: number;
   remaining_ml: number | null;
   occurred_at: string;
+  time_synced: number;
   synced_at: string;
 }
 
@@ -61,6 +62,7 @@ export interface DrinkRecordResponse {
   amountMl: number;
   remainingMl: number | null;
   occurredAt: string;
+  timeSynced: boolean;
   syncedAt: string;
 }
 

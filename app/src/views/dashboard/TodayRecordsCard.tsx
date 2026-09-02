@@ -2,6 +2,7 @@ import React from 'react';
 import { ChevronRight, Droplet, GlassWater, LoaderCircle, Trash2 } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 import { DrinkRecord } from '../../types';
+import { formatRecordTime } from '../../utils/recordDisplay';
 
 interface TodayRecordsCardProps {
   records: DrinkRecord[];
@@ -9,16 +10,6 @@ interface TodayRecordsCardProps {
   onDelete: (record: DrinkRecord) => Promise<void>;
   deletingRecordId: string | null;
 }
-
-const formatTime = (value: string): string => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '--:--';
-  return date.toLocaleTimeString('zh-TW', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-};
 
 export const TodayRecordsCard: React.FC<TodayRecordsCardProps> = ({
   records,
@@ -78,14 +69,22 @@ export const TodayRecordsCard: React.FC<TodayRecordsCardProps> = ({
               {record.eventType === 'refill' ? <Droplet size={19} /> : <GlassWater size={19} />}
             </span>
             <strong>{record.amountMl} ml</strong>
-            <span className="desktop-record-row__source">{record.eventType === 'refill' ? '補水事件' : '飲水紀錄'}</span>
-            <time dateTime={record.occurredAt}>{formatTime(record.occurredAt)}</time>
+            <span className="desktop-record-row__source">
+              {record.timeSynced === false
+                ? '未校時事件'
+                : record.eventType === 'refill'
+                  ? '補水事件'
+                  : '飲水紀錄'}
+            </span>
+            <time dateTime={record.timeSynced === false ? record.syncedAt : record.occurredAt}>
+              {formatRecordTime(record)}
+            </time>
             <button
               type="button"
               className="today-records__delete desktop-records__delete"
               onClick={() => void onDelete(record)}
               disabled={deletingRecordId !== null}
-              aria-label={`刪除 ${new Date(record.occurredAt).toLocaleString()} 的紀錄`}
+              aria-label={`刪除 ${record.timeSynced === false ? '未校時' : new Date(record.occurredAt).toLocaleString()} 的紀錄`}
               title="永久刪除紀錄"
             >
               {deletingRecordId === record.id ? (

@@ -47,6 +47,7 @@ function formatRecordResponse(r: DrinkRecord): DrinkRecordResponse {
     amountMl: r.amount_ml,
     remainingMl: r.remaining_ml,
     occurredAt: r.occurred_at,
+    timeSynced: Boolean(r.time_synced),
     syncedAt: r.synced_at,
   };
 }
@@ -121,9 +122,18 @@ export function recordWaterEvent(
     // Determine event type
     const eventType = payload.type || 'drink';
 
+    // A missing/zero timestamp is the firmware's explicit signal that the
+    // event happened before the cup had a trustworthy clock. Keep the server
+    // timestamp for auditability, but persist the trust bit separately so it
+    // can never be mistaken for the event's actual date in statistics.
+    const hasOccurredAt =
+      (typeof payload.occurredAt === 'number' && payload.occurredAt > 0) ||
+      (typeof payload.occurredAt === 'string' && payload.occurredAt.trim() !== '' && payload.occurredAt !== '0');
+    const timeSynced = payload.timeSynced !== false && hasOccurredAt;
+
     // Parse occurredAt
     let occurredAtIso: string;
-    if (payload.timeSynced === false || payload.occurredAt === 0 || !payload.occurredAt) {
+    if (!timeSynced) {
       occurredAtIso = new Date().toISOString();
     } else if (typeof payload.occurredAt === 'number') {
       const parsedDate = new Date(payload.occurredAt * 1000);
@@ -132,13 +142,17 @@ export function recordWaterEvent(
         return;
       }
       occurredAtIso = parsedDate.toISOString();
-    } else {
+    } else if (typeof payload.occurredAt === 'string') {
       const parsedDate = new Date(payload.occurredAt);
       if (isNaN(parsedDate.getTime())) {
         res.status(400).json({ error: 'Invalid occurredAt timestamp format' });
         return;
       }
       occurredAtIso = parsedDate.toISOString();
+    } else {
+      // `timeSynced` can only be true when a timestamp is present, but keep a
+      // defensive fallback in case the schema changes independently.
+      occurredAtIso = new Date().toISOString();
     }
 
     const syncedAtIso = new Date().toISOString();
@@ -182,8 +196,8 @@ export function recordWaterEvent(
     // Atomic insert with race condition / concurrency protection
     try {
       db.prepare(
-        `INSERT INTO drink_records (id, event_id, user_id, device_id, event_type, amount_ml, remaining_ml, occurred_at, synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO drink_records (id, event_id, user_id, device_id, event_type, amount_ml, remaining_ml, occurred_at, time_synced, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         recordId,
         payload.eventId || null,
@@ -193,6 +207,7 @@ export function recordWaterEvent(
         payload.amountMl,
         remainingMl,
         occurredAtIso,
+        timeSynced ? 1 : 0,
         syncedAtIso
       );
     } catch (insertErr: any) {
@@ -232,6 +247,7 @@ export function recordWaterEvent(
       amountMl: payload.amountMl,
       remainingMl,
       occurredAt: occurredAtIso,
+      timeSynced,
       syncedAt: syncedAtIso,
     };
 
@@ -405,7 +421,7 @@ export function getDailyStats(
     const dayRecords = db
       .prepare(
         `SELECT event_type, amount_ml FROM drink_records
-         WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?
+         WHERE user_id = ? AND time_synced = 1 AND occurred_at >= ? AND occurred_at <= ?
          ORDER BY occurred_at ASC`
       )
       .all(userId, dayStart, dayEnd) as unknown as Pick<DrinkRecord, 'event_type' | 'amount_ml'>[];
@@ -487,7 +503,7 @@ export function getWeeklyStats(
     const records = db
       .prepare(
         `SELECT event_type, amount_ml, occurred_at FROM drink_records
-         WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?`
+         WHERE user_id = ? AND time_synced = 1 AND occurred_at >= ? AND occurred_at <= ?`
       )
       .all(userId, startIso, endIso) as unknown as Pick<DrinkRecord, 'event_type' | 'amount_ml' | 'occurred_at'>[];
 
@@ -582,7 +598,7 @@ export function getMonthlyStats(
     const records = db
       .prepare(
         `SELECT event_type, amount_ml, occurred_at FROM drink_records
-         WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?`
+         WHERE user_id = ? AND time_synced = 1 AND occurred_at >= ? AND occurred_at <= ?`
       )
       .all(userId, startIso, endIso) as unknown as Pick<DrinkRecord, 'event_type' | 'amount_ml' | 'occurred_at'>[];
 

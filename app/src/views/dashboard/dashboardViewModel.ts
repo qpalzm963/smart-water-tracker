@@ -75,6 +75,7 @@ export const getRecentRecords = (
 
   return [...records]
     .filter((record) => {
+      if (record.timeSynced === false) return false;
       const occurredAt = new Date(record.occurredAt).getTime();
       return occurredAt >= startOfDay.getTime() && occurredAt < endOfDay.getTime();
     })

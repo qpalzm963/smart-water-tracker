@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Droplets, GlassWater, History, LoaderCircle, RefreshCw, Trash2 } from 'lucide-react';
 import { useWater } from '../contexts/WaterContext';
-import { WaterEventType } from '../types';
+import { DrinkRecord, WaterEventType } from '../types';
+import { formatRecordDateLabel } from '../utils/recordDisplay';
 
 interface HistoryViewProps {
   showToast: (msg: string, type?: 'success' | 'error' | 'info') => void;
@@ -44,8 +45,8 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ showToast }) => {
     setPage(1);
   };
 
-  const handleDelete = async (recordId: string, occurredAt: string) => {
-    const occurredAtLabel = new Date(occurredAt).toLocaleString();
+  const handleDelete = async (recordId: string, record: DrinkRecord) => {
+    const occurredAtLabel = formatRecordDateLabel(record);
     if (!window.confirm(`確定要永久刪除 ${occurredAtLabel} 的喝水紀錄嗎？刪除後無法復原。`)) {
       return;
     }
@@ -154,7 +155,17 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ showToast }) => {
               <tbody>
                 {records.map((record) => (
                   <tr key={record.id}>
-                    <td>{new Date(record.occurredAt).toLocaleString()}</td>
+                    <td>
+                      {record.timeSynced === false ? (
+                        <>
+                          <strong>未校時事件</strong>
+                          <br />
+                          <small className="text-muted">同步於 {new Date(record.syncedAt).toLocaleString()}</small>
+                        </>
+                      ) : (
+                        new Date(record.occurredAt).toLocaleString()
+                      )}
+                    </td>
                     <td>
                       <span
                         className={`badge badge-with-icon ${
@@ -179,9 +190,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ showToast }) => {
                       <button
                         type="button"
                         className="btn btn-danger btn-sm record-delete-button"
-                        onClick={() => handleDelete(record.id, record.occurredAt)}
+                        onClick={() => handleDelete(record.id, record)}
                         disabled={deletingRecordId !== null}
-                        aria-label={`刪除 ${new Date(record.occurredAt).toLocaleString()} 的紀錄`}
+                        aria-label={`刪除 ${formatRecordDateLabel(record)} 的紀錄`}
                       >
                         {deletingRecordId === record.id ? (
                           <LoaderCircle className="icon-spin" aria-hidden="true" />
