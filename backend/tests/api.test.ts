@@ -7,10 +7,11 @@ import { createApp } from '../src/app';
 import { initDatabase, closeDatabase, migrateDatabase } from '../src/database/db';
 import { getMongoDb, closeMongoConnection, ensureIndexes } from '../src/database/mongo';
 import { getRepositoryContainer, setRepositoryContainer } from '../src/repositories';
-import { Express } from 'express';
+import http from 'http';
 
 describe('Smart Water Tracker Backend API Test Suite', () => {
-  let app: Express;
+  let app: any;
+  let server: http.Server;
   let mongoServer: MongoMemoryServer;
   let userToken: string;
   let userId: string;
@@ -28,13 +29,18 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
 
     // Initialize in-memory SQLite database for legacy migration tests
     initDatabase(':memory:');
-    app = createApp();
+    const expressApp = createApp();
+    server = expressApp.listen(0);
+    app = server;
   }, 60000);
 
   afterAll(async () => {
     closeDatabase();
     setRepositoryContainer(null);
     await closeMongoConnection();
+    if (server) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
     if (mongoServer) {
       await mongoServer.stop();
     }
