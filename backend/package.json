@@ -8,7 +8,8 @@
     "build": "tsc",
     "prestart": "npm run build",
     "start": "node dist/server.js",
-    "test": "cross-env NODE_OPTIONS=\"--experimental-vm-modules\" jest --runInBand"
+    "test": "cross-env NODE_OPTIONS=\"--experimental-vm-modules\" jest --runInBand",
+    "migrate:mongo": "NODE_OPTIONS=\"--experimental-sqlite\" tsx src/scripts/migrateSqliteToMongo.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
