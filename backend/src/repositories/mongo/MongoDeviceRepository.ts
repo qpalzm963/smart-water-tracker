@@ -66,8 +66,16 @@ export class MongoDeviceRepository implements IDeviceRepository {
   }
 
   async claimDevice(id: string, input: ClaimDeviceInput): Promise<boolean> {
+    const filter: Record<string, any> = { _id: id };
+    if (input.expectedOwnerId !== undefined) {
+      filter.userId = input.expectedOwnerId;
+    }
+    if (input.expectedClaimCode !== undefined) {
+      filter.claimCode = input.expectedClaimCode;
+    }
+
     const res = await this.collection.updateOne(
-      { _id: id },
+      filter,
       {
         $set: {
           userId: input.userId,
@@ -97,17 +105,19 @@ export class MongoDeviceRepository implements IDeviceRepository {
   }
 
   async deleteById(id: string, userId: string): Promise<boolean> {
-    const res = await this.collection.deleteOne({ _id: id, userId });
-    if (res.deletedCount === 0) {
+    const device = await this.collection.findOne({ _id: id, userId });
+    if (!device) {
       return false;
     }
 
-    // SQLite ON DELETE SET NULL equivalent:
-    // Update drink_records referencing this device to null
+    // Step 1: Nullify foreign references in drink_records FIRST before deleting device
+    // Ensures failure at this step leaves device intact for clean retry without orphan references
     await this.db
       .collection<MongoDrinkRecordDoc>(MONGO_COLLECTIONS.DRINK_RECORDS)
       .updateMany({ deviceId: id }, { $set: { deviceId: null } });
 
-    return true;
+    // Step 2: Delete device document only after child references are safely cleared
+    const res = await this.collection.deleteOne({ _id: id, userId });
+    return res.deletedCount > 0;
   }
 }

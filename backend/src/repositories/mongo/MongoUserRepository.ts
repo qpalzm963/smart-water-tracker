@@ -102,18 +102,21 @@ export class MongoUserRepository implements IUserRepository {
   }
 
   async deleteById(id: string): Promise<boolean> {
-    const res = await this.collection.deleteOne({ _id: id });
-    if (res.deletedCount === 0) {
+    const user = await this.collection.findOne({ _id: id });
+    if (!user) {
       return false;
     }
 
-    // Cascade deletion of dependent records
+    // Step 1: Cascade deletion of dependent records FIRST before deleting the user.
+    // This guarantees that any transient failure leaves the user intact so the operation can be retried safely.
     await Promise.all([
       this.db.collection(MONGO_COLLECTIONS.DEVICES).deleteMany({ userId: id }),
       this.db.collection(MONGO_COLLECTIONS.DRINK_RECORDS).deleteMany({ userId: id }),
       this.db.collection(MONGO_COLLECTIONS.DELETED_WATER_EVENTS).deleteMany({ userId: id }),
     ]);
 
-    return true;
+    // Step 2: Delete user document only after dependent children are cleared.
+    const res = await this.collection.deleteOne({ _id: id });
+    return res.deletedCount > 0;
   }
 }

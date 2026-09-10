@@ -40,6 +40,8 @@ export interface ClaimDeviceInput {
   claimCode: string;
   name?: string | null;
   createdAt?: string;
+  expectedOwnerId?: string;
+  expectedClaimCode?: string;
 }
 
 export interface IDeviceRepository {

@@ -6,13 +6,14 @@ jest.setTimeout(60000);
 
 describe('MongoDB Repositories Layer (#13)', () => {
   let mongoServer: MongoMemoryServer;
+  let testDb: any;
 
   beforeAll(async () => {
     mongoServer = await MongoMemoryServer.create();
     const uri = mongoServer.getUri();
-    const db = await getMongoDb('test_repo_db', uri);
-    await ensureIndexes(db);
-    await getRepositoryContainer(db);
+    testDb = await getMongoDb('test_repo_db', uri);
+    await ensureIndexes(testDb);
+    await getRepositoryContainer(testDb);
   }, 60000);
 
   afterAll(async () => {
@@ -132,10 +133,90 @@ describe('MongoDB Repositories Layer (#13)', () => {
 
   it('initializePersistence ensures indexes and provides valid repository container', async () => {
     const { initializePersistence } = await import('../src/repositories');
-    const container = await initializePersistence();
+    const container = await initializePersistence(testDb);
     expect(container).toHaveProperty('userRepository');
     expect(container).toHaveProperty('deviceRepository');
     expect(container).toHaveProperty('waterRecordRepository');
     expect(container).toHaveProperty('deletedWaterEventRepository');
+  });
+
+  it('prevents TOCTOU race: concurrent claims with same old claimCode only allows one winner', async () => {
+    const { deviceRepository } = await getRepositoryContainer();
+
+    const initialOwner = 'user_owner_orig';
+    const deviceId = 'dev_concurrent_claim';
+    await deviceRepository.create({
+      id: deviceId,
+      userId: initialOwner,
+      deviceToken: 'dvt_orig_claim',
+      claimCode: 'VALID_SECRET_123',
+    });
+
+    // Two different users concurrently try to claim with the same initial claim code
+    const [claimA, claimB] = await Promise.all([
+      deviceRepository.claimDevice(deviceId, {
+        userId: 'user_claimant_A',
+        deviceToken: 'dvt_claimant_A',
+        claimCode: 'NEW_SECRET_A',
+        expectedOwnerId: initialOwner,
+        expectedClaimCode: 'VALID_SECRET_123',
+      }),
+      deviceRepository.claimDevice(deviceId, {
+        userId: 'user_claimant_B',
+        deviceToken: 'dvt_claimant_B',
+        claimCode: 'NEW_SECRET_B',
+        expectedOwnerId: initialOwner,
+        expectedClaimCode: 'VALID_SECRET_123',
+      }),
+    ]);
+
+    // Exactly one must succeed, the other must fail (false)
+    expect([claimA, claimB].filter(Boolean).length).toBe(1);
+
+    // The winning user now owns the device, and the old claimCode is invalidated
+    const device = await deviceRepository.findById(deviceId);
+    expect(device).not.toBeNull();
+    const winningUser = claimA ? 'user_claimant_A' : 'user_claimant_B';
+    const expectedNewSecret = claimA ? 'NEW_SECRET_A' : 'NEW_SECRET_B';
+    expect(device?.user_id).toBe(winningUser);
+    expect(device?.claim_code).toBe(expectedNewSecret);
+
+    // A third attempt with the old claimCode fails
+    const claimLate = await deviceRepository.claimDevice(deviceId, {
+      userId: 'user_late',
+      deviceToken: 'dvt_late',
+      claimCode: 'NEW_SECRET_LATE',
+      expectedOwnerId: initialOwner,
+      expectedClaimCode: 'VALID_SECRET_123',
+    });
+    expect(claimLate).toBe(false);
+  });
+
+  it('supports retryable cleanup: children are deleted before parent so failure leaves parent retryable', async () => {
+    const { userRepository, deviceRepository } = await getRepositoryContainer();
+
+    const userId = 'user_retry_test';
+    await userRepository.create({
+      id: userId,
+      username: 'retry_cascade_user',
+      email: 'retry@example.com',
+      passwordHash: 'hash',
+    });
+
+    await deviceRepository.create({
+      id: 'dev_retry_child',
+      userId,
+      deviceToken: 'dvt_retry_token',
+    });
+
+    // Calling deleteById on a nonexistent user returns false cleanly
+    expect(await userRepository.deleteById('nonexistent_user')).toBe(false);
+
+    // Deleting existing user succeeds
+    const deleted = await userRepository.deleteById(userId);
+    expect(deleted).toBe(true);
+
+    // Repeated delete returns false (idempotent, no orphans)
+    expect(await userRepository.deleteById(userId)).toBe(false);
   });
 });

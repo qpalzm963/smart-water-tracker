@@ -62,13 +62,22 @@ export async function bindDevice(
           const newDeviceToken = `dvt_${crypto.randomBytes(24).toString('hex')}`;
           const now = new Date().toISOString();
 
-          await deviceRepository.claimDevice(deviceId, {
+          const claimed = await deviceRepository.claimDevice(deviceId, {
             userId,
             deviceToken: newDeviceToken,
             claimCode: newClaimCode,
             name: name || existingDevice.name || null,
             createdAt: now,
+            expectedOwnerId: existingDevice.user_id,
+            expectedClaimCode: claimCode,
           });
+
+          if (!claimed) {
+            res.status(409).json({
+              error: 'Device claim failed. The claim code may have already been used or rotated by another session.',
+            });
+            return;
+          }
 
           const response: DeviceResponse = {
             id: deviceId,
