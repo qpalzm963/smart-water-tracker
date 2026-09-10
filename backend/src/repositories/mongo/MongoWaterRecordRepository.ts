@@ -79,6 +79,33 @@ export class MongoWaterRecordRepository implements IWaterRecordRepository {
 
     try {
       await this.collection.insertOne(doc);
+
+      // Two-phase validation fence: Verify parent user is STILL active.
+      // Catches concurrent user deletion that occurred while insertOne was in-flight or paused.
+      const postParentUser = await this.db.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS).findOne(
+        { _id: input.userId, isDeleting: { $ne: true } },
+        { projection: { _id: 1 } }
+      );
+      if (!postParentUser) {
+        await this.collection.deleteOne({ _id: doc._id });
+        const err: any = new Error('User does not exist or account is being deleted');
+        err.code = 'USER_NOT_FOUND';
+        throw err;
+      }
+
+      // Two-phase validation fence: Verify device is STILL active.
+      // If unbind occurred while insertOne was in-flight, nullify deviceId to prevent dangling reference.
+      if (finalDeviceId) {
+        const postDevice = await this.db.collection<MongoDeviceDoc>(MONGO_COLLECTIONS.DEVICES).findOne(
+          { _id: finalDeviceId, userId: input.userId, isDeleting: { $ne: true } },
+          { projection: { _id: 1 } }
+        );
+        if (!postDevice) {
+          await this.collection.updateOne({ _id: doc._id }, { $set: { deviceId: null } });
+          doc.deviceId = null;
+        }
+      }
+
       return { record: toDrinkRecordDomain(doc), isDuplicate: false };
     } catch (err: any) {
       if (

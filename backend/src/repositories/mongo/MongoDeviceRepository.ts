@@ -57,6 +57,19 @@ export class MongoDeviceRepository implements IDeviceRepository {
     };
 
     await this.collection.insertOne(doc);
+
+    // Two-phase validation fence: Verify parent user is STILL active.
+    const postParentUser = await this.db.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS).findOne(
+      { _id: input.userId, isDeleting: { $ne: true } },
+      { projection: { _id: 1 } }
+    );
+    if (!postParentUser) {
+      await this.collection.deleteOne({ _id: doc._id });
+      const err: any = new Error('User does not exist or account is being deleted');
+      err.code = 'USER_NOT_FOUND';
+      throw err;
+    }
+
     return toDeviceDomain(doc);
   }
 
@@ -79,6 +92,15 @@ export class MongoDeviceRepository implements IDeviceRepository {
   }
 
   async claimDevice(id: string, input: ClaimDeviceInput): Promise<boolean> {
+    // 1. Pre-validation: Target owner must exist and not be deleting
+    const targetUser = await this.db.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS).findOne(
+      { _id: input.userId, isDeleting: { $ne: true } },
+      { projection: { _id: 1 } }
+    );
+    if (!targetUser) {
+      return false;
+    }
+
     const filter: Record<string, any> = { _id: id, isDeleting: { $ne: true } };
     if (input.expectedOwnerId !== undefined) {
       filter.userId = input.expectedOwnerId;
@@ -100,7 +122,24 @@ export class MongoDeviceRepository implements IDeviceRepository {
         },
       }
     );
-    return res.matchedCount > 0;
+
+    if (res.matchedCount === 0) {
+      return false;
+    }
+
+    // 2. Post-validation: Verify target owner is STILL active (did not delete concurrently)
+    const postTargetUser = await this.db.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS).findOne(
+      { _id: input.userId, isDeleting: { $ne: true } },
+      { projection: { _id: 1 } }
+    );
+    if (!postTargetUser) {
+      // Target user was deleted concurrently! Device ownership would be orphaned!
+      // Delete/unbind device immediately to restore reference integrity.
+      await this.deleteById(id, input.userId);
+      return false;
+    }
+
+    return true;
   }
 
   async rotateToken(id: string, userId: string, newDeviceToken: string): Promise<boolean> {

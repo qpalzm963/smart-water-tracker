@@ -54,6 +54,15 @@ export class MongoDeletedWaterEventRepository
       },
       { upsert: true }
     );
+
+    // Post-validation fence: Verify parent user is STILL active
+    const postParentUser = await this.db.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS).findOne(
+      { _id: userId, isDeleting: { $ne: true } },
+      { projection: { _id: 1 } }
+    );
+    if (!postParentUser) {
+      await this.collection.deleteOne({ _id: id });
+    }
   }
 
   async deleteByUserId(userId: string): Promise<void> {

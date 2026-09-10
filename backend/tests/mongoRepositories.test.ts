@@ -144,11 +144,25 @@ describe('MongoDB Repositories Layer (#13)', () => {
   it('prevents TOCTOU race: concurrent claims with same old claimCode only allows one winner', async () => {
     const { userRepository, deviceRepository } = await getRepositoryContainer();
 
-    const initialOwner = 'user_owner_orig';
+    const initialOwner = 'user_owner_orig_123';
     await userRepository.create({
       id: initialOwner,
       username: 'owner_orig_unique',
       email: 'owner_orig@example.com',
+      passwordHash: 'hash',
+    });
+
+    // Valid target claimants must exist in users collection
+    await userRepository.create({
+      id: 'user_claimant_A',
+      username: 'claimant_a',
+      email: 'claimant_a@example.com',
+      passwordHash: 'hash',
+    });
+    await userRepository.create({
+      id: 'user_claimant_B',
+      username: 'claimant_b',
+      email: 'claimant_b@example.com',
       passwordHash: 'hash',
     });
 
@@ -191,13 +205,70 @@ describe('MongoDB Repositories Layer (#13)', () => {
 
     // A third attempt with the old claimCode fails
     const claimLate = await deviceRepository.claimDevice(deviceId, {
-      userId: 'user_late',
+      userId: 'user_claimant_A',
       deviceToken: 'dvt_late',
       claimCode: 'NEW_SECRET_LATE',
       expectedOwnerId: initialOwner,
       expectedClaimCode: 'VALID_SECRET_123',
     });
     expect(claimLate).toBe(false);
+  });
+
+  it('rejects claimDevice when target claimant user does not exist or is being deleted', async () => {
+    const { userRepository, deviceRepository } = await getRepositoryContainer();
+
+    const ownerId = 'user_owner_claim_valid';
+    await userRepository.create({
+      id: ownerId,
+      username: 'claim_valid_owner',
+      email: 'claim_valid@example.com',
+      passwordHash: 'hash',
+    });
+
+    const deviceId = 'dev_claim_nonexistent_target';
+    await deviceRepository.create({
+      id: deviceId,
+      userId: ownerId,
+      deviceToken: 'dvt_claim_target_token',
+      claimCode: 'CODE_TARGET_123',
+    });
+
+    // 1. Claiming with a non-existent user must return false
+    const claimNonExistent = await deviceRepository.claimDevice(deviceId, {
+      userId: 'user_does_not_exist_99999',
+      deviceToken: 'dvt_new_fake',
+      claimCode: 'NEW_CODE_FAKE',
+      expectedOwnerId: ownerId,
+      expectedClaimCode: 'CODE_TARGET_123',
+    });
+    expect(claimNonExistent).toBe(false);
+
+    // Device still owned by original owner
+    const device = await deviceRepository.findById(deviceId);
+    expect(device?.user_id).toBe(ownerId);
+
+    // 2. Claiming with a user marked isDeleting must return false
+    const deletingUserId = 'user_claimant_deleting';
+    await userRepository.create({
+      id: deletingUserId,
+      username: 'deleting_claimant',
+      email: 'deleting_claimant@example.com',
+      passwordHash: 'hash',
+    });
+    await testDb.collection('users').updateOne({ _id: deletingUserId }, { $set: { isDeleting: true } });
+
+    const claimDeleting = await deviceRepository.claimDevice(deviceId, {
+      userId: deletingUserId,
+      deviceToken: 'dvt_new_deleting',
+      claimCode: 'NEW_CODE_DELETING',
+      expectedOwnerId: ownerId,
+      expectedClaimCode: 'CODE_TARGET_123',
+    });
+    expect(claimDeleting).toBe(false);
+
+    // Device still owned by original owner
+    const deviceStill = await deviceRepository.findById(deviceId);
+    expect(deviceStill?.user_id).toBe(ownerId);
   });
 
   it('supports retryable cleanup on injected failure: cleans remaining child records and parent upon retry', async () => {
@@ -328,5 +399,144 @@ describe('MongoDB Repositories Layer (#13)', () => {
     // If it ran before, compensating sweep deleted it
     const remainingRecord = await testDb.collection('drink_records').findOne({ _id: 'rec_during_user_delete_race' });
     expect(remainingRecord).toBeNull();
+  });
+
+  it('deterministic race test: prevents orphan records when child write passes parent validation but insertOne is paused until full user delete + sweep completes', async () => {
+    const { userRepository, waterRecordRepository } = await getRepositoryContainer();
+
+    const userId = 'user_deterministic_race';
+    await userRepository.create({
+      id: userId,
+      username: 'det_race_user',
+      email: 'det_race@example.com',
+      passwordHash: 'hash',
+    });
+
+    let pauseResolve!: () => void;
+    const pausedBeforeInsert = new Promise<void>((resolve) => {
+      pauseResolve = resolve;
+    });
+    let resumeResolve!: () => void;
+    const resumeInsert = new Promise<void>((resolve) => {
+      resumeResolve = resolve;
+    });
+
+    // Spy on drink_records insertOne to intercept the write right after parent validation
+    const origInsertOne = Collection.prototype.insertOne;
+    const insertSpy = jest.spyOn(Collection.prototype, 'insertOne').mockImplementation(async function (
+      this: any,
+      doc: any,
+      ...args: any[]
+    ) {
+      if (doc?._id === 'rec_deterministic_orphan_target') {
+        // Notify test that parent validation has passed and we are paused right before insert
+        pauseResolve();
+        // Wait until deleteById finishes completely
+        await resumeInsert;
+      }
+      return (origInsertOne as any).apply(this, [doc, ...args]);
+    });
+
+    // Start child write in the background
+    const writePromise = waterRecordRepository.create({
+      id: 'rec_deterministic_orphan_target',
+      userId,
+      eventType: 'drink',
+      amountMl: 400,
+      occurredAt: new Date().toISOString(),
+      timeSynced: true,
+    });
+
+    // Wait until child write has passed parent validation and is paused
+    await pausedBeforeInsert;
+
+    // Now execute full parent deletion + cleanup + sweep to completion
+    const deleteSuccess = await userRepository.deleteById(userId);
+    expect(deleteSuccess).toBe(true);
+
+    // Verify parent user document is completely gone from MongoDB
+    expect(await testDb.collection('users').findOne({ _id: userId })).toBeNull();
+
+    // Now release the child write's insertOne
+    resumeResolve();
+
+    // The write promise must be rejected with USER_NOT_FOUND (because two-phase fence catches the deletion)
+    await expect(writePromise).rejects.toThrow('User does not exist or account is being deleted');
+
+    // Crucial verification: NO ORPHAN RECORD EXISTS IN DRINK_RECORDS!
+    const orphanDoc = await testDb.collection('drink_records').findOne({ _id: 'rec_deterministic_orphan_target' });
+    expect(orphanDoc).toBeNull();
+
+    insertSpy.mockRestore();
+  });
+
+  it('deterministic race test: prevents dangling deviceId when child write passes device validation but insertOne is paused until full device unbind completes', async () => {
+    const { userRepository, deviceRepository, waterRecordRepository } = await getRepositoryContainer();
+
+    const userId = 'user_det_dev_race';
+    await userRepository.create({
+      id: userId,
+      username: 'det_dev_user',
+      email: 'det_dev@example.com',
+      passwordHash: 'hash',
+    });
+
+    const deviceId = 'dev_det_race';
+    await deviceRepository.create({
+      id: deviceId,
+      userId,
+      deviceToken: 'dvt_det_race',
+    });
+
+    let pauseResolve!: () => void;
+    const pausedBeforeInsert = new Promise<void>((resolve) => {
+      pauseResolve = resolve;
+    });
+    let resumeResolve!: () => void;
+    const resumeInsert = new Promise<void>((resolve) => {
+      resumeResolve = resolve;
+    });
+
+    const origInsertOne = Collection.prototype.insertOne;
+    const insertSpy = jest.spyOn(Collection.prototype, 'insertOne').mockImplementation(async function (
+      this: any,
+      doc: any,
+      ...args: any[]
+    ) {
+      if (doc?._id === 'rec_deterministic_dev_target') {
+        pauseResolve();
+        await resumeInsert;
+      }
+      return (origInsertOne as any).apply(this, [doc, ...args]);
+    });
+
+    const writePromise = waterRecordRepository.create({
+      id: 'rec_deterministic_dev_target',
+      userId,
+      deviceId,
+      eventType: 'drink',
+      amountMl: 350,
+      occurredAt: new Date().toISOString(),
+      timeSynced: true,
+    });
+
+    await pausedBeforeInsert;
+
+    // Delete device while write is paused
+    const unbindSuccess = await deviceRepository.deleteById(deviceId, userId);
+    expect(unbindSuccess).toBe(true);
+
+    // Release write
+    resumeResolve();
+
+    const result = await writePromise;
+    expect(result.record).toBeDefined();
+
+    // Verified: record was saved, BUT deviceId was automatically nullified by two-phase fence (NO dangling reference!)
+    const savedDoc = await testDb.collection('drink_records').findOne({ _id: 'rec_deterministic_dev_target' });
+    expect(savedDoc).not.toBeNull();
+    expect(savedDoc?.deviceId).toBeNull();
+
+    insertSpy.mockRestore();
   });
 });
