@@ -28,16 +28,22 @@ smart-water-tracker/
 │   ├── include/
 │   ├── src/
 │   └── test/
-├── backend/                  # ☁️ Node.js + TypeScript + Express + SQLite 後端服務
+├── api/                      # ⚡ Vercel Serverless Function entrypoint (api/index.ts -> Express)
+├── backend/                  # ☁️ Node.js + TypeScript + Express + MongoDB 後端服務
 │   ├── package.json
 │   ├── tsconfig.json
 │   ├── src/
 │   │   ├── app.ts            # Express 應用與 API 路由
-│   │   ├── database/         # SQLite 資料庫與 Schema
+│   │   ├── database/         # MongoDB 連線、索引、集合定義與 SQLite 搬遷
+│   │   ├── repositories/     # 異步 Repository 抽象層 (Mongo & SQLite)
 │   │   ├── controllers/      # Auth, Device, Water 業務邏輯
-│   │   ├── middleware/       # JWT 與 Device Token 雙重認證
-│   │   └── public/           # 簡易網頁管理儀表板
-│   └── tests/                # Jest + Supertest 自動化測試
+│   │   ├── middleware/       # JWT、Device Token 雙重認證與 Serverless Rate Limiter
+│   │   └── serverless.ts     # Vercel Serverless 轉接層
+│   └── tests/                # Jest 自動化整合測試
+├── docs/                     # 📚 部署、搬遷與維運手冊
+│   ├── database/             # MongoDB Schema 對照與索引規劃
+│   ├── migration/            # SQLite 至 MongoDB 資料搬遷手冊
+│   └── deployment/           # Vercel 部署、Rollback 與 E2E 驗收手冊
 └── workshop/                 # 🎓 實體手作工作坊教材與證書生成器
 ```
 
@@ -176,8 +182,41 @@ ESP32-C3 支援 **BLE 輔助配網** 與 **WiFi 獨立雲端直傳**：
 
 ---
 
+## 🚀 雲端生產環境部署與維運 (Production Deployment & Operations)
+
+本專案已完成向 **Vercel Serverless + MongoDB Atlas** 的全端現代化遷移：
+- **同源架構 (Same-Origin Routing)**：前端 SPA 與後端 API 同域部署，零 CORS 負擔。
+- **分散式 Rate Limiter**：以 MongoDB TTL collection 實現跨 Serverless Instance 的速率保護與 Fail-open 容錯機制。
+- **Web Bluetooth (HTTPS)**：在安全上下文 (Secure Context) 下與 ESP32-C3 智慧水杯無縫通訊。
+
+### 相關指引與手冊
+- 📖 **[Vercel 生產環境部署手冊](docs/deployment/vercel-production.md)**：包含 Monorepo 設定、環境變數與 MongoDB Atlas 網路配置。
+- 🛡️ **[生產環境 Rollback 與災難復原手冊](docs/deployment/ROLLBACK.md)**：包含 Vercel 即時回退、Secret 輪替、MongoDB 備份還原與自建 MongoDB 轉移。
+- 🔍 **[生產環境端到端驗收手冊](docs/deployment/PRODUCTION_VERIFICATION.md)**：完整 15 項驗收標準 (AC-1 ~ AC-15)、安全審核與 Smoke Test 指引。
+
+### 驗收與煙霧測試指令
+```bash
+# 執行全端單元與整合測試 (107 App + 101 Backend)
+npm test
+
+# 針對 Production / Staging 執行自動化 Smoke Test（需提供專用測試帳號避免累積孤兒資料）
+SMOKE_USERNAME="dedicated_smoke_tester" \
+SMOKE_PASSWORD="StrongSmokePassword123!" \
+TARGET_URL="https://your-app.vercel.app" \
+npm run test:smoke
+
+# 針對可拋棄之 Preview 測試環境（允許自動註冊臨時帳號）
+ALLOW_EPHEMERAL_USER=true TARGET_URL="https://preview.vercel.app" npm run test:smoke
+
+# 本地端驗證（需顯式啟用本地目標確認）
+ALLOW_LOCAL_TARGET=true TARGET_URL="http://localhost:3000" npm run test:smoke
+```
+
+---
+
 ## 🎓 實體手作工作坊
 
 本專案提供 5 小時實體工作坊課程與教學套件（定價 NT$ 2,500，含完整硬體材料包）：
 - **工作坊說明與線上報名頁**：[workshop/index.html](workshop/index.html)
 - **主辦人籌備與開課指南**：[workshop/README.md](workshop/README.md)
+
