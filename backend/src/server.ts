@@ -37,7 +37,14 @@ async function startServer(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
+function sanitizeServerError(err: unknown): string {
+  const raw = err instanceof Error ? (err.stack || err.message) : String(err);
+  return raw
+    .replace(/mongodb(?:\+srv)?:\/\/[^\s@]+@/gi, 'mongodb+srv://***:***@')
+    .replace(/dvt_[a-f0-9]{32,64}/gi, 'dvt_***');
+}
+
 startServer().catch((err) => {
-  console.error('[Server] Failed to start:', err);
+  console.error('[Server] Failed to start:', sanitizeServerError(err));
   process.exit(1);
 });

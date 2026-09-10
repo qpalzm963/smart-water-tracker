@@ -34,10 +34,10 @@ The backend maintains a clean separation between the Express application composi
 ```
 
 ### Entry Point Files
-- [`backend/src/serverless.ts`](file:///Users/vince.huang/develop/tools/water-worktrees/issue-7/backend/src/serverless.ts): Canonical serverless Express app instance without server listener loops.
-- [`api/index.ts`](file:///Users/vince.huang/develop/tools/water-worktrees/issue-7/api/index.ts): Root entrypoint for unified monorepo Vercel deployments. Re-exports `backend/src/serverless`.
-- [`backend/api/index.ts`](file:///Users/vince.huang/develop/tools/water-worktrees/issue-7/backend/api/index.ts): Subdirectory entrypoint for standalone backend Vercel projects (Root Directory = `backend`).
-- [`backend/src/server.ts`](file:///Users/vince.huang/develop/tools/water-worktrees/issue-7/backend/src/server.ts): Traditional Node.js server entry for local development (`npm run dev`) and container execution.
+- [`backend/src/serverless.ts`](../../backend/src/serverless.ts): Canonical serverless Express app instance without server listener loops.
+- [`api/index.ts`](../../api/index.ts): Root entrypoint for unified monorepo Vercel deployments. Re-exports `backend/src/serverless`.
+- [`backend/api/index.ts`](../../backend/api/index.ts): Subdirectory entrypoint for standalone backend Vercel projects (Root Directory = `backend`).
+- [`backend/src/server.ts`](../../backend/src/server.ts): Traditional Node.js server entry for local development (`npm run dev`) and container execution.
 
 ---
 
@@ -82,7 +82,7 @@ Frontend and backend are deployed as two independent Vercel projects.
 Serverless environments spin up ephemeral execution containers that freeze or terminate when idle. The backend implements three key design patterns for serverless reliability:
 
 ### 1. Instant Health Check Bypass
-[`/api/v1/health`](file:///Users/vince.huang/develop/tools/water-worktrees/issue-7/backend/src/app.ts#L65-L73) is mounted before the database initialization middleware. It returns `200 OK` with `{ status: "ok", runtime: "vercel-serverless" }` immediately, allowing Vercel deployment health checks and uptime monitors to succeed even before MongoDB connects.
+[`/api/v1/health`](../../backend/src/app.ts) is mounted before the database initialization middleware. It returns `200 OK` with `{ status: "ok", runtime: "vercel-serverless" }` immediately, allowing Vercel deployment health checks and uptime monitors to succeed even before MongoDB connects.
 
 ### 2. Lazy, Idempotent Database Readiness
 API requests under `/api/v1/*` pass through the `ensureMongoReady()` middleware:
@@ -113,4 +113,4 @@ API requests under `/api/v1/*` pass through the `ensureMongoReady()` middleware:
 - [x] `/api/v1/health` responds with `200 OK` and `runtime: "vercel-serverless"` without requiring active DB.
 - [x] Unauthenticated and authenticated request paths succeed through the serverless entrypoint.
 - [x] Concurrent cold-start requests initialize safely without duplicate key or connection errors.
-- [x] 100% test coverage across all 6 backend suites and 11 app suites.
+- [x] All 6 backend test suites and 11 app test suites pass cleanly.
