@@ -18,5 +18,7 @@ export const config = {
   nodeEnv,
   jwtSecret: jwtSecret || 'smart_water_tracker_dev_insecure_jwt_secret_change_in_prod',
   databasePath: process.env.DATABASE_PATH || './data/water_tracker.db',
+  mongodbUri: process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/water_tracker',
+  mongodbDbName: process.env.MONGODB_DB_NAME || 'water_tracker',
   timezone: 'Asia/Taipei',
 };
