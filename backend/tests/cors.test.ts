@@ -30,7 +30,7 @@ describe('CORS and Same-Origin Security (#8)', () => {
     expect(res.body.status).toBe('ok');
   });
 
-  it('allows same-origin requests where Origin matches Host header', async () => {
+  it('allows same-origin requests where Origin matches Host header (scheme + host)', async () => {
     process.env.NODE_ENV = 'production';
     process.env.JWT_SECRET = 'a_very_strong_random_secret_for_jwt_auth_12345';
     process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/test';
@@ -39,11 +39,30 @@ describe('CORS and Same-Origin Security (#8)', () => {
     const res = await request(app)
       .get('/api/v1/health')
       .set('Host', 'smart-water-tracker.vercel.app')
+      .set('X-Forwarded-Proto', 'https')
       .set('Origin', 'https://smart-water-tracker.vercel.app');
 
     expect(res.status).toBe(200);
     expect(res.headers['access-control-allow-origin']).toBe('https://smart-water-tracker.vercel.app');
     expect(res.headers['access-control-allow-credentials']).toBe('true');
+  });
+
+  it('rejects http Origin when server is https — scheme mismatch is not same-origin', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.JWT_SECRET = 'a_very_strong_random_secret_for_jwt_auth_12345';
+    process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/test';
+    delete process.env.ALLOWED_ORIGINS;
+
+    const app = createApp();
+    // Server is https (X-Forwarded-Proto: https), but Origin sends http:// — must NOT be same-origin
+    const res = await request(app)
+      .get('/api/v1/health')
+      .set('Host', 'smart-water-tracker.vercel.app')
+      .set('X-Forwarded-Proto', 'https')
+      .set('Origin', 'http://smart-water-tracker.vercel.app');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
   });
 
   it('allows same-origin requests where Origin matches X-Forwarded-Host header', async () => {
@@ -55,6 +74,7 @@ describe('CORS and Same-Origin Security (#8)', () => {
     const res = await request(app)
       .get('/api/v1/health')
       .set('X-Forwarded-Host', 'smart-water-tracker.vercel.app')
+      .set('X-Forwarded-Proto', 'https')
       .set('Origin', 'https://smart-water-tracker.vercel.app');
 
     expect(res.status).toBe(200);

@@ -58,16 +58,19 @@ export function createCorsMiddleware(): express.RequestHandler {
     }
 
     const host = (req.headers['x-forwarded-host'] as string) || req.headers.host;
-    let originHost: string | null = null;
-    try {
-      originHost = new URL(origin).host;
-    } catch {
-      originHost = null;
-    }
 
-    // 2. Same-origin requests: Origin header matches Host / X-Forwarded-Host header
-    if (host && originHost && originHost.toLowerCase() === host.toLowerCase()) {
-      return callback(null, { origin: true, credentials: true });
+    // Derive the server scheme: trust X-Forwarded-Proto (set by Vercel / load balancer), then
+    // fall back to the connection's own TLS state. Never infer scheme from the Origin header.
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim()
+      ?? (req.socket && (req.socket as { encrypted?: boolean }).encrypted ? 'https' : 'http');
+
+    // 2. Same-origin check: scheme AND host must both match (mirrors browser Same-Origin Policy).
+    //    http://example.com vs https://example.com are DIFFERENT origins.
+    if (host) {
+      const expectedOrigin = `${proto}://${host}`;
+      if (origin.toLowerCase() === expectedOrigin.toLowerCase()) {
+        return callback(null, { origin: true, credentials: true });
+      }
     }
 
     // 3. Explicitly configured ALLOWED_ORIGINS whitelist
