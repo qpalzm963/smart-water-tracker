@@ -4,7 +4,7 @@ import path from 'path';
 import os from 'os';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { Db, MongoClient } from 'mongodb';
-import { runMigration, maskMongoUri } from '../src/scripts/migrateSqliteToMongo';
+import { runMigration, maskMongoUri, sanitizeMongoError } from '../src/scripts/migrateSqliteToMongo';
 import {
   MONGO_COLLECTIONS,
   MongoUserDoc,
@@ -225,6 +225,13 @@ describe('SQLite to MongoDB Migration Tool (#14)', () => {
     const customSqlitePath = path.join(os.tmpdir(), `test_with_time_synced_${Date.now()}.db`);
     const sqlite = new DatabaseSync(customSqlitePath);
     sqlite.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL
+      );
+      INSERT INTO users VALUES ('u_custom', 'custom_user', 'custom@test.com', 'hash');
       CREATE TABLE drink_records (
         id TEXT PRIMARY KEY,
         event_id TEXT,
@@ -511,6 +518,169 @@ describe('SQLite to MongoDB Migration Tool (#14)', () => {
     expect(report.verification?.verified).toBe(false);
     expect(report.verification?.usersMatch).toBe(false);
     expect(report.verification?.errors.some((e) => e.includes('User count mismatch'))).toBe(true);
+  });
+
+  it('sanitizes index or connection-level errors without leaking credentials or raw key values', () => {
+    // 1. Mongo error with sensitive token in message or keyValue
+    const mongoErr = new Error('E11000 duplicate key error collection: water_tracker.devices index: idx_devices_token_unique dup key: { deviceToken: "dvt_super_secret_hardware_key_12345" }');
+    (mongoErr as any).code = 11000;
+    (mongoErr as any).keyPattern = { deviceToken: 1 };
+
+    const sanitized = sanitizeMongoError(mongoErr);
+    expect(sanitized).not.toContain('dvt_super_secret_hardware_key_12345');
+    expect(sanitized).not.toContain('dvt_');
+    expect(sanitized).toBe('duplicate key error on index [deviceToken]');
+
+    // 2. Connection error with embedded URI credentials
+    const connErr = new Error('getaddrinfo ENOTFOUND mongodb://user:super_secret_pass@cluster0.abc.mongodb.net/test');
+    const sanitizedConn = sanitizeMongoError(connErr);
+    expect(sanitizedConn).not.toContain('super_secret_pass');
+    expect(sanitizedConn).toContain('****');
+  });
+
+  it('propagates parent user conflict to dependent child entities (device, drink record, tombstone) preventing orphan documents', async () => {
+    const depSqlitePath = path.join(os.tmpdir(), `test_dep_prop_${Date.now()}.db`);
+    const sqlite = new DatabaseSync(depSqlitePath);
+    sqlite.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL
+      );
+      CREATE TABLE devices (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        device_token TEXT UNIQUE NOT NULL
+      );
+      CREATE TABLE drink_records (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        device_id TEXT,
+        amount_ml INTEGER NOT NULL,
+        occurred_at TEXT NOT NULL
+      );
+      CREATE TABLE deleted_water_events (
+        user_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        deleted_at TEXT
+      );
+
+      -- User 'u_conflict'
+      INSERT INTO users VALUES ('u_conflict', 'conflict_user', 'conflict@test.com', 'hash1');
+      -- Child device, record, and tombstone depending on 'u_conflict'
+      INSERT INTO devices VALUES ('dev_child', 'u_conflict', 'dvt_child_token_unique');
+      INSERT INTO drink_records VALUES ('rec_child', 'u_conflict', 'dev_child', 300, '2026-09-10T12:00:00Z');
+      INSERT INTO deleted_water_events VALUES ('u_conflict', 'evt_child', '2026-09-10T12:00:00Z');
+    `);
+    sqlite.close();
+
+    const targetDb = mongoClient.db(`test_dep_prop_${Date.now()}`);
+    // Pre-seed target MongoDB with a colliding username for a DIFFERENT _id
+    await targetDb.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS).insertOne({
+      _id: 'u_existing_collision',
+      username: 'conflict_user',
+      email: 'existing_other@test.com',
+      passwordHash: 'hash_other',
+      displayName: null,
+      dailyGoalMl: 2000,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Test A: Dry-Run projection must NOT show children as imported!
+    const dryReport = await runMigration(
+      {
+        sourcePath: depSqlitePath,
+        targetUri: mongoServer.getUri(),
+        targetDbName: targetDb.databaseName,
+        dryRun: true,
+      },
+      targetDb
+    );
+
+    expect(dryReport.success).toBe(false);
+    expect(dryReport.collections[MONGO_COLLECTIONS.USERS].conflicted).toBe(1);
+    expect(dryReport.collections[MONGO_COLLECTIONS.USERS].imported).toBe(0);
+
+    // Dependent device, record, and deleted event must be conflicted, NOT imported!
+    expect(dryReport.collections[MONGO_COLLECTIONS.DEVICES].imported).toBe(0);
+    expect(dryReport.collections[MONGO_COLLECTIONS.DEVICES].conflicted).toBe(1);
+
+    expect(dryReport.collections[MONGO_COLLECTIONS.DRINK_RECORDS].imported).toBe(0);
+    expect(dryReport.collections[MONGO_COLLECTIONS.DRINK_RECORDS].conflicted).toBe(1);
+
+    expect(dryReport.collections[MONGO_COLLECTIONS.DELETED_WATER_EVENTS].imported).toBe(0);
+    expect(dryReport.collections[MONGO_COLLECTIONS.DELETED_WATER_EVENTS].conflicted).toBe(1);
+
+    // Test B: Live Run must NOT insert orphan child documents into MongoDB!
+    const liveReport = await runMigration(
+      {
+        sourcePath: depSqlitePath,
+        targetUri: mongoServer.getUri(),
+        targetDbName: targetDb.databaseName,
+        dryRun: false,
+      },
+      targetDb
+    );
+
+    expect(liveReport.success).toBe(false);
+    // Verify NO orphan documents exist in MongoDB
+    expect(await targetDb.collection<MongoDeviceDoc>(MONGO_COLLECTIONS.DEVICES).findOne({ _id: 'dev_child' })).toBeNull();
+    expect(await targetDb.collection<MongoDrinkRecordDoc>(MONGO_COLLECTIONS.DRINK_RECORDS).findOne({ _id: 'rec_child' })).toBeNull();
+    expect(await targetDb.collection<MongoDeletedWaterEventDoc>(MONGO_COLLECTIONS.DELETED_WATER_EVENTS).findOne({ _id: 'u_conflict:evt_child' })).toBeNull();
+
+    fs.unlinkSync(depSqlitePath);
+  });
+
+  it('flags same _id user as conflicted and verification fails if only updatedAt differs', async () => {
+    const userUpdSqlitePath = path.join(os.tmpdir(), `test_user_upd_${Date.now()}.db`);
+    const sqlite = new DatabaseSync(userUpdSqlitePath);
+    sqlite.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        display_name TEXT,
+        daily_goal_ml INTEGER,
+        created_at TEXT,
+        updated_at TEXT
+      );
+      -- SQLite record with updatedAt = 2026-09-10 10:00:00
+      INSERT INTO users VALUES ('u_upd_diff', 'upd_user', 'upd@test.com', 'hash123', 'Upd User', 2000, '2026-09-10 08:00:00', '2026-09-10 10:00:00');
+    `);
+    sqlite.close();
+
+    const targetDb = mongoClient.db(`test_user_upd_${Date.now()}`);
+    // Pre-populate target with the same user, but updatedAt = 2026-09-10 12:00:00 (diverged!)
+    await targetDb.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS).insertOne({
+      _id: 'u_upd_diff',
+      username: 'upd_user',
+      email: 'upd@test.com',
+      passwordHash: 'hash123',
+      displayName: 'Upd User',
+      dailyGoalMl: 2000,
+      createdAt: '2026-09-10T08:00:00.000Z',
+      updatedAt: '2026-09-10T12:00:00.000Z',
+    });
+
+    const report = await runMigration(
+      {
+        sourcePath: userUpdSqlitePath,
+        targetUri: mongoServer.getUri(),
+        targetDbName: targetDb.databaseName,
+        dryRun: false,
+      },
+      targetDb
+    );
+
+    // Must be marked conflicted, NOT skipped!
+    expect(report.success).toBe(false);
+    expect(report.collections[MONGO_COLLECTIONS.USERS].conflicted).toBe(1);
+    expect(report.collections[MONGO_COLLECTIONS.USERS].skipped).toBe(0);
+
+    fs.unlinkSync(userUpdSqlitePath);
   });
 
   it('fails with clear error if source SQLite database does not exist', async () => {

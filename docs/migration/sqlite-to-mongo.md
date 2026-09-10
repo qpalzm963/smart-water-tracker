@@ -123,10 +123,10 @@ In live mode, the tool automatically executes built-in data integrity verificati
 ```
 
 ### Verification Criteria:
-1. **Entity Counts**: Total MongoDB document count must be greater than or equal to source SQLite count for all collections.
-2. **Volume Checksum**: The sum of `amount_ml` across all drink records must match between SQLite and MongoDB.
-3. **Key-field Preservations**: Device tokens, usernames, and composite `{ userId, eventId }` unique boundaries are verified.
-4. **Exit Code**: If any count or volume checksum check fails, `report.success` is set to `false` and the script exits with non-zero exit code (`1`).
+1. **Entity Counts**: Total MongoDB document count must match exactly (`===`) the source SQLite count for all collections.
+2. **Volume Checksum**: The sum of `amount_ml` across all drink records must match exactly (`===`) between SQLite and MongoDB.
+3. **Key-field & Timestamp Preservations**: Device tokens, usernames, emails, timestamps (`createdAt`, `updatedAt`, `occurredAt`, `syncedAt`), and composite `{ userId, eventId }` unique boundaries are verified across all source entities.
+4. **Exit Code**: If any count, checksum, or key-field check fails, `report.success` is set to `false` and the script exits with non-zero exit code (`1`).
 
 ---
 
@@ -134,8 +134,9 @@ In live mode, the tool automatically executes built-in data integrity verificati
 
 If unexpected discrepancies are discovered during post-migration verification or staging rollout:
 
-### Step 6.1: Divert Traffic Back to SQLite
-- In Vercel / hosting environment, revert `MONGODB_URI` environment variable or roll back deployment to the previous stable release.
+### Step 6.1: Roll Back to SQLite-backed Release
+- Because production uses MongoDB repositories exclusively, simply changing or unsetting `MONGODB_URI` does not divert traffic back to SQLite.
+- To roll back traffic to SQLite, redeploy the previous SQLite-backed release build (e.g. promote the prior stable deployment in Vercel / hosting environment).
 
 ### Step 6.2: Scoped MongoDB Rollback
 Because migrations should target a **dedicated / isolated database**:

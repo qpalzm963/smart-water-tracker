@@ -119,6 +119,12 @@ export function normalizeOptionalSqliteTimestamp(ts: string | null | undefined):
 
 export function sanitizeMongoError(err: any): string {
   if (!err) return 'Unknown database error';
+  if (typeof err === 'string') {
+    return maskMongoUri(err)
+      .replace(/keyValue:\s*\{[^}]*\}/g, 'keyValue: { [MASKED] }')
+      .replace(/dvt_[a-fA-F0-9]+/g, '[MASKED_TOKEN]')
+      .replace(/"[^"]*dvt_[^"]*"/g, '"[MASKED_TOKEN]"');
+  }
   if (err.code === 11000) {
     if (err.keyPattern) {
       const keys = Object.keys(err.keyPattern).join(', ');
@@ -129,7 +135,16 @@ export function sanitizeMongoError(err: any): string {
     }
     return 'duplicate key error on unique index';
   }
-  return err.code ? `MongoDB error code ${err.code}` : (err.name || 'Database error');
+  const rawMsg = err.message ? String(err.message) : '';
+  const sanitizedMsg = maskMongoUri(rawMsg)
+    .replace(/keyValue:\s*\{[^}]*\}/g, 'keyValue: { [MASKED] }')
+    .replace(/dvt_[a-fA-F0-9]+/g, '[MASKED_TOKEN]')
+    .replace(/"[^"]*dvt_[^"]*"/g, '"[MASKED_TOKEN]"');
+
+  if (err.code) {
+    return `MongoDB error code ${err.code}: ${sanitizedMsg || err.name || 'Database error'}`;
+  }
+  return sanitizedMsg || err.name || 'Database error';
 }
 
 export function isUserPayloadEqual(existing: MongoUserDoc, incoming: MongoUserDoc): boolean {
@@ -139,7 +154,8 @@ export function isUserPayloadEqual(existing: MongoUserDoc, incoming: MongoUserDo
     existing.passwordHash === incoming.passwordHash &&
     (existing.displayName ?? null) === (incoming.displayName ?? null) &&
     Number(existing.dailyGoalMl ?? 2000) === Number(incoming.dailyGoalMl ?? 2000) &&
-    normalizeSqliteTimestamp(existing.createdAt) === normalizeSqliteTimestamp(incoming.createdAt)
+    normalizeSqliteTimestamp(existing.createdAt) === normalizeSqliteTimestamp(incoming.createdAt) &&
+    normalizeSqliteTimestamp(existing.updatedAt) === normalizeSqliteTimestamp(incoming.updatedAt)
   );
 }
 
@@ -233,22 +249,55 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
 
   const sqliteDb = new DatabaseSync(options.sourcePath, { readOnly: true });
 
-  let mongoClient: MongoClient | null = null;
-  let mongoDb: Db;
-
-  if (customDb) {
-    mongoDb = customDb;
-  } else {
-    mongoClient = await getMongoClient(options.targetUri);
-    mongoDb = mongoClient.db(options.targetDbName);
-  }
-
-  // Ensure target collections have the required indexes in live mode
-  if (!options.dryRun) {
-    await ensureIndexes(mongoDb);
-  }
-
   try {
+    let mongoClient: MongoClient | null = null;
+    let mongoDb: Db;
+
+    if (customDb) {
+      mongoDb = customDb;
+    } else {
+      mongoClient = await getMongoClient(options.targetUri);
+      mongoDb = mongoClient.db(options.targetDbName);
+    }
+
+    // Ensure target collections have the required indexes in live mode
+    if (!options.dryRun) {
+      await ensureIndexes(mongoDb);
+    }
+
+    const userCol = mongoDb.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS);
+    const devCol = mongoDb.collection<MongoDeviceDoc>(MONGO_COLLECTIONS.DEVICES);
+    const recCol = mongoDb.collection<MongoDrinkRecordDoc>(MONGO_COLLECTIONS.DRINK_RECORDS);
+    const delCol = mongoDb.collection<MongoDeletedWaterEventDoc>(MONGO_COLLECTIONS.DELETED_WATER_EVENTS);
+
+    // Dependency tracking across entities for dependency-aware migration
+    const validUserIds = new Set<string>();
+    const conflictedUserIds = new Set<string>();
+    const validDeviceIds = new Set<string>();
+    const conflictedDeviceIds = new Set<string>();
+
+    async function isUserAvailable(userId: string): Promise<boolean> {
+      if (conflictedUserIds.has(userId)) return false;
+      if (validUserIds.has(userId)) return true;
+      const doc = await userCol.findOne({ _id: userId }, { projection: { _id: 1 } });
+      if (doc) {
+        validUserIds.add(userId);
+        return true;
+      }
+      return false;
+    }
+
+    async function isDeviceAvailable(deviceId: string): Promise<boolean> {
+      if (conflictedDeviceIds.has(deviceId)) return false;
+      if (validDeviceIds.has(deviceId)) return true;
+      const doc = await devCol.findOne({ _id: deviceId }, { projection: { _id: 1 } });
+      if (doc) {
+        validDeviceIds.add(deviceId);
+        return true;
+      }
+      return false;
+    }
+
     // 1. Users
     const usersTableExists = sqliteDb
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
@@ -278,7 +327,6 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
 
       const summary = report.collections[MONGO_COLLECTIONS.USERS];
       summary.sourceCount = users.length;
-      const userCol = mongoDb.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS);
 
       for (const row of users) {
         const existingById = await userCol.findOne({ _id: row.id });
@@ -297,9 +345,11 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
         if (existingById) {
           if (isUserPayloadEqual(existingById, doc)) {
             summary.skipped++;
+            validUserIds.add(doc._id);
             continue;
           } else {
             summary.conflicted++;
+            conflictedUserIds.add(doc._id);
             report.conflicts.push(
               `User _id "${doc._id}" already exists in MongoDB with differing data.`
             );
@@ -317,6 +367,7 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
 
         if (existingByUniqueKey) {
           summary.conflicted++;
+          conflictedUserIds.add(doc._id);
           report.conflicts.push(
             `User _id "${doc._id}" unique key collision on username/email with existing document _id "${existingByUniqueKey._id}".`
           );
@@ -325,11 +376,14 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
 
         if (options.dryRun) {
           summary.imported++;
+          validUserIds.add(doc._id);
         } else {
           try {
             await userCol.insertOne(doc);
             summary.imported++;
+            validUserIds.add(doc._id);
           } catch (err: any) {
+            conflictedUserIds.add(doc._id);
             if (err.code === 11000) {
               summary.conflicted++;
               report.conflicts.push(`User _id "${doc._id}" unique constraint violation: ${sanitizeMongoError(err)}`);
@@ -370,7 +424,6 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
 
       const summary = report.collections[MONGO_COLLECTIONS.DEVICES];
       summary.sourceCount = devices.length;
-      const devCol = mongoDb.collection<MongoDeviceDoc>(MONGO_COLLECTIONS.DEVICES);
 
       for (const row of devices) {
         const existingById = await devCol.findOne({ _id: row.id });
@@ -384,13 +437,26 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
           createdAt: row.created_at ? normalizeSqliteTimestamp(row.created_at) : (existingById?.createdAt || new Date().toISOString()),
         };
 
+        // Dependency check: referenced parent user must exist and not be conflicted
+        const hasParentUser = await isUserAvailable(doc.userId);
+        if (!hasParentUser) {
+          summary.conflicted++;
+          conflictedDeviceIds.add(doc._id);
+          report.conflicts.push(
+            `Device _id "${doc._id}" depends on parent user "${doc.userId}", which is missing or conflicted.`
+          );
+          continue;
+        }
+
         // Preflight conflict check
         if (existingById) {
           if (isDevicePayloadEqual(existingById, doc)) {
             summary.skipped++;
+            validDeviceIds.add(doc._id);
             continue;
           } else {
             summary.conflicted++;
+            conflictedDeviceIds.add(doc._id);
             report.conflicts.push(
               `Device _id "${doc._id}" already exists in MongoDB with differing data.`
             );
@@ -402,6 +468,7 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
         const existingByToken = await devCol.findOne({ deviceToken: doc.deviceToken });
         if (existingByToken) {
           summary.conflicted++;
+          conflictedDeviceIds.add(doc._id);
           report.conflicts.push(
             `Device _id "${doc._id}" unique key collision on deviceToken with existing document _id "${existingByToken._id}".`
           );
@@ -410,11 +477,14 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
 
         if (options.dryRun) {
           summary.imported++;
+          validDeviceIds.add(doc._id);
         } else {
           try {
             await devCol.insertOne(doc);
             summary.imported++;
+            validDeviceIds.add(doc._id);
           } catch (err: any) {
+            conflictedDeviceIds.add(doc._id);
             if (err.code === 11000) {
               summary.conflicted++;
               report.conflicts.push(`Device _id "${doc._id}" unique constraint violation: ${sanitizeMongoError(err)}`);
@@ -460,7 +530,6 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
 
       const summary = report.collections[MONGO_COLLECTIONS.DRINK_RECORDS];
       summary.sourceCount = records.length;
-      const recCol = mongoDb.collection<MongoDrinkRecordDoc>(MONGO_COLLECTIONS.DRINK_RECORDS);
 
       for (const row of records) {
         const existingById = await recCol.findOne({ _id: row.id });
@@ -477,6 +546,28 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
           timeSynced: hasTimeSynced && row.time_synced !== null && row.time_synced !== undefined ? Boolean(row.time_synced) : true,
           syncedAt: row.synced_at ? normalizeSqliteTimestamp(row.synced_at) : (existingById?.syncedAt || new Date().toISOString()),
         };
+
+        // Dependency check: referenced parent user must exist and not be conflicted
+        const hasParentUser = await isUserAvailable(doc.userId);
+        if (!hasParentUser) {
+          summary.conflicted++;
+          report.conflicts.push(
+            `Drink record _id "${doc._id}" depends on parent user "${doc.userId}", which is missing or conflicted.`
+          );
+          continue;
+        }
+
+        // Dependency check: if deviceId is present, referenced device must exist and not be conflicted
+        if (doc.deviceId) {
+          const hasDevice = await isDeviceAvailable(doc.deviceId);
+          if (!hasDevice) {
+            summary.conflicted++;
+            report.conflicts.push(
+              `Drink record _id "${doc._id}" depends on device "${doc.deviceId}", which is missing or conflicted.`
+            );
+            continue;
+          }
+        }
 
         // Preflight conflict check
         if (existingById) {
@@ -529,13 +620,22 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
       .get();
 
     if (deletedTableExists) {
+      const delCols = (sqliteDb.prepare("PRAGMA table_info('deleted_water_events')").all() as Array<{ name: string }>).map(
+        (c) => c.name
+      );
+      const hasDeletedAt = delCols.includes('deleted_at');
+      const selectFields = [
+        'user_id',
+        'event_id',
+        hasDeletedAt ? 'deleted_at' : 'NULL as deleted_at',
+      ].join(', ');
+
       const deletedEvents = sqliteDb
-        .prepare('SELECT user_id, event_id, deleted_at FROM deleted_water_events')
+        .prepare(`SELECT ${selectFields} FROM deleted_water_events`)
         .all() as any[];
 
       const summary = report.collections[MONGO_COLLECTIONS.DELETED_WATER_EVENTS];
       summary.sourceCount = deletedEvents.length;
-      const delCol = mongoDb.collection<MongoDeletedWaterEventDoc>(MONGO_COLLECTIONS.DELETED_WATER_EVENTS);
 
       for (const row of deletedEvents) {
         const id = `${row.user_id}:${row.event_id}`;
@@ -546,6 +646,16 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
           eventId: row.event_id,
           deletedAt: row.deleted_at ? normalizeSqliteTimestamp(row.deleted_at) : (existingById?.deletedAt || new Date().toISOString()),
         };
+
+        // Dependency check: referenced parent user must exist and not be conflicted
+        const hasParentUser = await isUserAvailable(doc.userId);
+        if (!hasParentUser) {
+          summary.conflicted++;
+          report.conflicts.push(
+            `Deleted water event _id "${doc._id}" depends on parent user "${doc.userId}", which is missing or conflicted.`
+          );
+          continue;
+        }
 
         if (existingById) {
           if (isDeletedEventPayloadEqual(existingById, doc)) {
@@ -662,21 +772,33 @@ export async function runMigration(options: MigrationOptions, customDb?: Db): Pr
       // 5.3 Key-Field Verification (Scoped across all source records)
       let keyFieldMismatches = 0;
 
-      // Users key-field check (username, email)
+      // Users key-field and timestamp check (username, email, createdAt, updatedAt)
       if (usersTableExists) {
-        const allSqliteUsers = sqliteDb.prepare('SELECT id, username, email FROM users').all() as any[];
+        const userCols = (sqliteDb.prepare("PRAGMA table_info('users')").all() as Array<{ name: string }>).map((c) => c.name);
+        const hasCreatedAt = userCols.includes('created_at');
+        const hasUpdatedAt = userCols.includes('updated_at');
+        const selectCols = [
+          'id',
+          'username',
+          'email',
+          hasCreatedAt ? 'created_at' : 'NULL as created_at',
+          hasUpdatedAt ? 'updated_at' : 'NULL as updated_at',
+        ].join(', ');
+        const allSqliteUsers = sqliteDb.prepare(`SELECT ${selectCols} FROM users`).all() as any[];
         const userCol = mongoDb.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS);
         for (const u of allSqliteUsers) {
-          const doc = await userCol.findOne({ _id: u.id }, { projection: { username: 1, email: 1 } });
+          const doc = await userCol.findOne({ _id: u.id }, { projection: { username: 1, email: 1, createdAt: 1, updatedAt: 1 } });
           if (!doc) {
             keyFieldMismatches++;
             verification.errors.push(`User _id "${u.id}" missing in MongoDB during verification`);
           } else if (
             doc.username?.toLowerCase() !== u.username?.toLowerCase() ||
-            doc.email?.toLowerCase() !== u.email?.toLowerCase()
+            doc.email?.toLowerCase() !== u.email?.toLowerCase() ||
+            (u.created_at && doc.createdAt !== normalizeSqliteTimestamp(u.created_at)) ||
+            (u.updated_at && doc.updatedAt !== normalizeSqliteTimestamp(u.updated_at))
           ) {
             keyFieldMismatches++;
-            verification.errors.push(`User _id "${u.id}" key fields mismatch in MongoDB`);
+            verification.errors.push(`User _id "${u.id}" key fields or timestamps mismatch in MongoDB`);
           }
         }
       }
@@ -834,7 +956,7 @@ async function main(): Promise<void> {
     printReport(report);
     process.exit(report.success ? 0 : 1);
   } catch (err) {
-    console.error('[Migration Error]', err instanceof Error ? err.message : String(err));
+    console.error('[Migration Error]', sanitizeMongoError(err));
     process.exit(1);
   }
 }
