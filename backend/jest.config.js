@@ -7,4 +7,6 @@ module.exports = {
   clearMocks: true,
   resetMocks: true,
   restoreMocks: true,
+  globalSetup: '<rootDir>/tests/globalSetup.ts',
+  globalTeardown: '<rootDir>/tests/globalTeardown.ts',
 };

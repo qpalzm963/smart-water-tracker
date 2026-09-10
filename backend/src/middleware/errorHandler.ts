@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
+import { sanitizeErrorMessage } from '../utils/sanitize';
 
 export function errorHandler(
   err: unknown,
@@ -18,10 +19,7 @@ export function errorHandler(
     return;
   }
 
-  const rawMessage = err instanceof Error ? err.message : String(err);
-  const sanitizedMessage = rawMessage
-    .replace(/mongodb(?:\+srv)?:\/\/[^\s@]+@/gi, 'mongodb+srv://***:***@')
-    .replace(/dvt_[a-f0-9]{32,64}/gi, 'dvt_***');
+  const sanitizedMessage = sanitizeErrorMessage(err);
 
   console.error('Unhandled error:', sanitizedMessage);
   res.status(500).json({

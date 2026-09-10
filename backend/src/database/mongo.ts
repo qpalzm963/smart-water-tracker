@@ -177,4 +177,11 @@ export async function ensureIndexes(db: Db): Promise<void> {
     { userId: 1 },
     { name: 'idx_deleted_events_user_id' }
   );
+
+  // 5. Rate Limits collection (TTL index for automatic window expiration)
+  const rateLimits = db.collection(MONGO_COLLECTIONS.RATE_LIMITS);
+  await rateLimits.createIndex(
+    { expiresAt: 1 },
+    { expireAfterSeconds: 0, name: 'idx_rate_limits_ttl' }
+  );
 }
