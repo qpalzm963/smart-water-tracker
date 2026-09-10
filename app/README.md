@@ -13,7 +13,7 @@ This directory contains the Smart Water Tracker client web application built wit
    - **Output Directory**: `dist`
    - **Install Command**: `npm install`
 3. **Environment Variables**:
-   - `VITE_API_PROXY_TARGET`: (Optional, for local development proxy). In production, relative path `/api/v1` is routed to backend via Vercel rewrites (configured in root or proxy).
+   - `VITE_API_PROXY_TARGET`: `VITE_API_PROXY_TARGET` is only used for local development. Production keeps the `/api/v1` relative-path contract; backend routing will be configured separately.
 4. Deploy!
 
 ### SPA Routing & Asset Rewrites
