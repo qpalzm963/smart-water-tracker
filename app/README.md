@@ -19,6 +19,13 @@ This directory contains the Smart Water Tracker client web application built wit
 ### SPA Routing & Asset Rewrites
 `app/vercel.json` configures single-page application fallback rules so routes like `/history`, `/devices`, etc. load `index.html` seamlessly without 404 errors, while keeping static assets under `assets/` intact.
 
+## Vercel Preview Smoke Test Checklist
+When verifying a Vercel Preview deployment:
+- [ ] `/` loads successfully and displays the initial Dashboard.
+- [ ] Direct navigation/refresh on deep links (`/history`, `/devices`, `/settings`) renders without 404.
+- [ ] Static assets (`dist/assets/*.js`, `dist/assets/*.css`, SVG icons) load with HTTP 200.
+- [ ] Requests to `/api/v1/*` are NOT intercepted by SPA fallback (do not return `index.html`).
+
 ## Local Development
 ```bash
 # In repo root
