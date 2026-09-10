@@ -50,6 +50,12 @@ export class MongoUserRepository implements IUserRepository {
       return toUserDomain(doc);
     } catch (err: any) {
       if (err instanceof MongoServerError && err.code === 11000) {
+        const keyPattern = err.keyPattern || {};
+        if (keyPattern.email || (err.message && err.message.includes('idx_users_email'))) {
+          const customError = new Error('Email is already registered');
+          (customError as any).code = 'DUPLICATE_EMAIL';
+          throw customError;
+        }
         const customError = new Error('Username is already registered');
         (customError as any).code = 'DUPLICATE_USERNAME';
         throw customError;

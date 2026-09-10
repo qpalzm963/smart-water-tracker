@@ -1,11 +1,12 @@
 import { createApp } from './app';
 import { config } from './config/env';
-import { initDatabase, closeDatabase } from './database/db';
+import { initializePersistence } from './repositories';
+import { closeMongoConnection } from './database/mongo';
 
-function startServer(): void {
-  // Initialize Database
-  initDatabase();
-  console.log(`[Database] SQLite initialized at: ${config.databasePath}`);
+async function startServer(): Promise<void> {
+  // Initialize MongoDB Persistence & Indexes
+  await initializePersistence();
+  console.log(`[Database] MongoDB persistence initialized for: ${config.mongodbDbName}`);
 
   const app = createApp();
 
@@ -17,10 +18,10 @@ function startServer(): void {
     console.log(`================================================`);
   });
 
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     console.log(`\n[Server] Received ${signal}. Shutting down gracefully...`);
-    server.close(() => {
-      closeDatabase();
+    server.close(async () => {
+      await closeMongoConnection();
       console.log('[Server] Database connection closed. Server exited cleanly.');
       process.exit(0);
     });
@@ -36,4 +37,7 @@ function startServer(): void {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('[Server] Failed to start:', err);
+  process.exit(1);
+});

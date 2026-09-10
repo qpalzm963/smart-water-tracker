@@ -1,5 +1,5 @@
 import { Db } from 'mongodb';
-import { getMongoDb } from '../database/mongo';
+import { getMongoDb, ensureIndexes } from '../database/mongo';
 import {
   IUserRepository,
   IDeviceRepository,
@@ -32,6 +32,10 @@ export function setRepositoryContainer(
   activeContainer = container;
 }
 
+export function hasActiveRepositoryContainer(): boolean {
+  return activeContainer !== null;
+}
+
 export async function getRepositoryContainer(
   db?: Db
 ): Promise<RepositoryContainer> {
@@ -49,4 +53,17 @@ export async function getRepositoryContainer(
     activeContainer = container;
   }
   return container;
+}
+
+/**
+ * Initializes MongoDB database connection, ensures indexes and unique constraints,
+ * and configures the singleton repository container.
+ * Shared entrypoint for standalone servers, serverless cold-starts, and tests.
+ */
+export async function initializePersistence(
+  db?: Db
+): Promise<RepositoryContainer> {
+  const targetDb = db || (await getMongoDb());
+  await ensureIndexes(targetDb);
+  return getRepositoryContainer(targetDb);
 }

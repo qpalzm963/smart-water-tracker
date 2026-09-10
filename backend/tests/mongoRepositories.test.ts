@@ -108,4 +108,34 @@ describe('MongoDB Repositories Layer (#13)', () => {
     expect(record).not.toBeNull();
     expect(record?.device_id).toBeNull();
   });
+
+  it('differentiates DUPLICATE_EMAIL from DUPLICATE_USERNAME on constraint violation', async () => {
+    const { userRepository } = await getRepositoryContainer();
+
+    await userRepository.create({
+      id: 'user_email_test_1',
+      username: 'unique_user_alpha',
+      email: 'shared_email@example.com',
+      passwordHash: 'hash',
+    });
+
+    // Attempting to create user with different username but identical email should trigger DUPLICATE_EMAIL
+    await expect(
+      userRepository.create({
+        id: 'user_email_test_2',
+        username: 'unique_user_beta',
+        email: 'shared_email@example.com',
+        passwordHash: 'hash',
+      })
+    ).rejects.toMatchObject({ code: 'DUPLICATE_EMAIL' });
+  });
+
+  it('initializePersistence ensures indexes and provides valid repository container', async () => {
+    const { initializePersistence } = await import('../src/repositories');
+    const container = await initializePersistence();
+    expect(container).toHaveProperty('userRepository');
+    expect(container).toHaveProperty('deviceRepository');
+    expect(container).toHaveProperty('waterRecordRepository');
+    expect(container).toHaveProperty('deletedWaterEventRepository');
+  });
 });

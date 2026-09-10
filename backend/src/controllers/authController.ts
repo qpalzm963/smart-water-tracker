@@ -80,6 +80,10 @@ export async function register(req: Request, res: Response, next: NextFunction):
         res.status(409).json({ error: 'Username is already registered' });
         return;
       }
+      if (err.code === 'DUPLICATE_EMAIL') {
+        res.status(409).json({ error: 'Email is already registered' });
+        return;
+      }
       throw err;
     }
 
