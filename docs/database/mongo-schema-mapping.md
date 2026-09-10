@@ -57,9 +57,9 @@ Represents individual drinking and refilling log events.
 | `event_type` | TEXT | `eventType` | String | `'drink' \| 'refill'` |
 | `amount_ml` | INTEGER | `amountMl` | Number | Milliliters consumed or added |
 | `remaining_ml`| INTEGER | `remainingMl` | Number \| null | Remaining cup volume |
-| `occurred_at` | TEXT | `occurredAt` | String | ISO 8601 timestamp |
-| `time_synced` | INTEGER (1/0)| `timeSynced` | Boolean | `true` if cup clock was trustworthy |
-| `synced_at` | TEXT | `syncedAt` | String | Server ISO 8601 ingestion time |
+| `occurred_at` | TEXT | `occurredAt` | String | Normalized to ISO-8601 UTC (`YYYY-MM-DDTHH:mm:ss.sssZ`) |
+| *(None / New)* | - | `timeSynced` | Boolean | **Mongo-only new field**. Derived during SQLite migration as `true` for legacy records; ESP32 sends boolean on upload. |
+| `synced_at` | TEXT | `syncedAt` | String | Normalized to ISO-8601 UTC (`YYYY-MM-DDTHH:mm:ss.sssZ`) |
 
 ### Collection: `deleted_water_events`
 Tombstone records preventing deleted events from being re-uploaded upon Bluetooth resynchronization.
@@ -89,5 +89,21 @@ Tombstone records preventing deleted events from being re-uploaded upon Bluetoot
 
 ---
 
-## 4. Serverless Connection Lifecycle
-In serverless runtimes (e.g. Vercel Functions), connection pooling is managed via module-scoped singletons (`cachedClient`, `cachedDb`). Cold starts initialize the connection pool, while subsequent warm invocations reuse the cached pool. Connections configure `maxPoolSize: 10` and `serverSelectionTimeoutMS: 5000` to handle transient network hiccups safely.
+## 4. Timestamp Normalization (SQLite to MongoDB)
+
+SQLite standard `datetime('now')` expressions generate strings formatted as:
+`YYYY-MM-DD HH:MM:SS` (without trailing timezone indicator).
+
+In MongoDB, to ensure lexicographical comparisons, consistent ISO string parsing in JavaScript (`new Date(str)`), and index sorting across range queries:
+- All timestamp strings (`createdAt`, `updatedAt`, `lastSeenAt`, `occurredAt`, `syncedAt`, `deletedAt`) are normalized to **ISO-8601 UTC strings**:
+  `YYYY-MM-DDTHH:mm:ss.sssZ` (e.g., `2026-09-10T09:30:00.000Z`).
+- Migration scripts and API ingestion controllers format timestamps using `new Date(val).toISOString()` before inserting or querying.
+
+---
+
+## 5. Serverless Connection Lifecycle & Concurrent Cold-Start Protection
+
+In serverless runtimes (e.g. Vercel Functions):
+- **Promise-Based Connection Caching**: Rather than caching only the resolved `MongoClient`, the connection layer caches `Promise<MongoClient>`. If multiple concurrent requests arrive during a cold start, all callers share the identical in-flight connection promise, eliminating race conditions and avoiding duplicate connection pool allocation.
+- **Fail-Safe Cleanup**: If the connection attempt rejects, the cached promise is discarded so subsequent invocations can retry.
+- **Pool Tuning**: Connections configure `maxPoolSize: 10`, `minPoolSize: 1`, and `serverSelectionTimeoutMS: 5000` to handle transient network hiccups safely.

@@ -2,12 +2,14 @@ import { MongoClient, Db, MongoClientOptions } from 'mongodb';
 import { config } from '../config/env';
 import { MONGO_COLLECTIONS } from './mongoCollections';
 
+let clientPromise: Promise<MongoClient> | null = null;
 let cachedClient: MongoClient | null = null;
 let cachedDb: Db | null = null;
 
 /**
  * Get or initialize MongoDB client instance.
- * Caches the connection in-memory across warm serverless invocations.
+ * Caches the connection Promise in-memory to prevent cold-start concurrency races
+ * across simultaneous serverless invocations.
  */
 export async function getMongoClient(
   uri?: string,
@@ -15,6 +17,10 @@ export async function getMongoClient(
 ): Promise<MongoClient> {
   if (cachedClient) {
     return cachedClient;
+  }
+
+  if (clientPromise) {
+    return clientPromise;
   }
 
   const connectionUri = uri || config.mongodbUri;
@@ -25,9 +31,19 @@ export async function getMongoClient(
     ...options,
   });
 
-  await client.connect();
-  cachedClient = client;
-  return cachedClient;
+  clientPromise = (async () => {
+    try {
+      await client.connect();
+      cachedClient = client;
+      return client;
+    } catch (err) {
+      clientPromise = null;
+      cachedClient = null;
+      throw err;
+    }
+  })();
+
+  return clientPromise;
 }
 
 /**
@@ -49,7 +65,18 @@ export async function getMongoDb(dbName?: string, uri?: string): Promise<Db> {
  * Used during graceful shutdown and after integration test runs.
  */
 export async function closeMongoConnection(): Promise<void> {
-  if (cachedClient) {
+  if (clientPromise) {
+    try {
+      const client = await clientPromise;
+      await client.close();
+    } catch {
+      // Ignore errors if client failed to connect initially
+    } finally {
+      clientPromise = null;
+      cachedClient = null;
+      cachedDb = null;
+    }
+  } else if (cachedClient) {
     await cachedClient.close();
     cachedClient = null;
     cachedDb = null;

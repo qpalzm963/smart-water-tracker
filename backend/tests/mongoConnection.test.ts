@@ -47,6 +47,19 @@ describe('MongoDB Connection Layer and Index Management (#12)', () => {
     expect(db1.databaseName).toBe(dbName);
   });
 
+  it('safely handles concurrent cold-start requests without creating duplicate clients', async () => {
+    // Ensure connection is fully closed first
+    await closeMongoConnection();
+
+    // Trigger concurrent callers simultaneously while cold
+    const [clientA, clientB] = await Promise.all([
+      getMongoClient(uri),
+      getMongoClient(uri),
+    ]);
+
+    expect(clientA).toBe(clientB);
+  });
+
   it('idempotently creates indexes without error on repeated execution', async () => {
     const db = await getMongoDb(dbName, uri);
     await expect(ensureIndexes(db)).resolves.not.toThrow();
