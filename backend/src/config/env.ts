@@ -7,17 +7,10 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 const nodeEnv = process.env.NODE_ENV || 'development';
 const jwtSecret = process.env.JWT_SECRET;
 
-if (nodeEnv === 'production') {
-  if (!jwtSecret || jwtSecret.includes('super_secret_jwt_key') || jwtSecret.length < 16) {
-    throw new Error(
-      '[FATAL SECURITY ERROR] In production, JWT_SECRET must be set to a strong random secret in your .env file. Server refusing to start.'
-    );
-  }
-  if (!process.env.MONGODB_URI) {
-    throw new Error(
-      '[FATAL CONFIG ERROR] In production, MONGODB_URI must be configured in your environment variables. Refusing to start.'
-    );
-  }
+if (nodeEnv === 'production' && (!jwtSecret || jwtSecret.includes('super_secret_jwt_key') || jwtSecret.length < 16)) {
+  throw new Error(
+    '[FATAL SECURITY ERROR] In production, JWT_SECRET must be set to a strong random secret in your .env file. Server refusing to start.'
+  );
 }
 
 export const config = {

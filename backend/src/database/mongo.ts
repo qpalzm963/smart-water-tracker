@@ -29,7 +29,7 @@ export async function getMongoClient(
 
   const client = new MongoClient(connectionUri, {
     maxPoolSize: 10,
-    minPoolSize: 1,
+    minPoolSize: 0,
     serverSelectionTimeoutMS: 5000,
     ...options,
   });
