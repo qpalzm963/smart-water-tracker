@@ -1,0 +1,39 @@
+# Smart Water Tracker Frontend (React + Vite)
+
+This directory contains the Smart Water Tracker client web application built with React, TypeScript, and Vite.
+
+## Vercel Deployment Guide
+
+### Option 1: Standalone Frontend Project on Vercel
+1. In the Vercel Dashboard, click **New Project** and import the `smart-water-tracker` repository.
+2. In **Project Settings**:
+   - **Root Directory**: Select `app`
+   - **Framework Preset**: `Vite`
+   - **Build Command**: `npm run build` (or leave default `vite build`)
+   - **Output Directory**: `dist`
+   - **Install Command**: `npm install`
+3. **Environment Variables**:
+   - `VITE_API_PROXY_TARGET`: `VITE_API_PROXY_TARGET` is only used for local development. Production keeps the `/api/v1` relative-path contract; backend routing will be configured separately.
+4. Deploy!
+
+### SPA Routing & Asset Rewrites
+`app/vercel.json` configures single-page application fallback rules so routes like `/history`, `/devices`, etc. load `index.html` seamlessly without 404 errors, while keeping static assets under `assets/` intact.
+
+## Vercel Preview Smoke Test Checklist
+When verifying a Vercel Preview deployment:
+- [ ] `/` loads successfully and displays the initial Dashboard.
+- [ ] Direct navigation/refresh on deep links (`/history`, `/devices`, `/settings`) renders without 404.
+- [ ] Static assets (`dist/assets/*.js`, `dist/assets/*.css`, SVG icons) load with HTTP 200.
+- [ ] Requests to `/api/v1/*` are NOT intercepted by SPA fallback (do not return `index.html`).
+
+## Local Development
+```bash
+# In repo root
+npm run app:dev
+
+# Run tests
+npm run app:test
+
+# Build for production
+npm run app:build
+```
