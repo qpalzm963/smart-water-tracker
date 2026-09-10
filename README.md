@@ -16,6 +16,8 @@ smart-water-tracker/
 │   ├── tsconfig.json
 │   ├── vite.config.ts
 │   ├── src/
+│   │   ├── assets/game/      # 喝水遊戲化 MVP 素材 (SVG)，見該目錄 README
+│   │   ├── game/             # 每日 Boss 戰純函式規則、狀態持久化、useDailyGame hook
 │   │   ├── services/         # API 客戶端、BLE 協議通訊、離線同步佇列 (Offline Sync)
 │   │   ├── contexts/         # Auth, BLE, Water, Device 狀態管理
 │   │   ├── views/            # Dashboard, BLE 控制, 歷程, 統計, 裝置管理, 設定

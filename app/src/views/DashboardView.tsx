@@ -19,12 +19,27 @@ import { HydrationReminder } from './dashboard/HydrationReminder';
 import { QuickDrinkGrid } from './dashboard/QuickDrinkGrid';
 import { TechDashboardHeader } from './dashboard/TechDashboardHeader';
 import { TodayRecordsCard } from './dashboard/TodayRecordsCard';
+import { BossBattleCard } from './dashboard/game/BossBattleCard';
+import { useDailyGame } from '../game/useDailyGame';
 import { DrinkRecord } from '../types';
 
 interface DashboardViewProps {
   showToast: (msg: string, type?: 'success' | 'error' | 'info') => void;
   onNavigate: (tab: ActiveTab) => void;
 }
+
+export const getDrinkSuccessMessage = (
+  amountMl: number,
+  energyGained: number,
+  waterMl: number,
+  dailyGoalMl: number,
+): string => {
+  if (energyGained > 0) return `+${amountMl} ml，獲得 ${energyGained} 水能量`;
+  if (dailyGoalMl > 0 && waterMl >= dailyGoalMl) {
+    return `已記錄 ${amountMl} ml，今日目標已達成，不再累積水能量`;
+  }
+  return `已記錄 ${amountMl} ml，目前未新增水能量`;
+};
 
 const formatDashboardDate = (now: Date): string =>
   new Intl.DateTimeFormat('zh-TW', {
@@ -48,6 +63,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     deleteWaterRecord,
   } = useWater();
   const { status: bleStatus, summary: bleSummary } = useBle();
+  const game = useDailyGame();
   const [busyAmount, setBusyAmount] = useState<number | null>(null);
   const [successAmount, setSuccessAmount] = useState<number | null>(null);
   const [deletingRecordId, setDeletingRecordId] = useState<string | null>(null);
@@ -77,6 +93,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const handleQuickLog = async (amount: number) => {
     const pendingBefore = offlineQueue.getCount();
+    const energyPreview = game.previewEnergy(amount);
+    const waterMlAfterLog = totalMl + amount;
     setBusyAmount(amount);
     try {
       await logWaterRecord(buildDrinkPayload(amount));
@@ -85,7 +103,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       showToast(
         queuedOffline
           ? `已暫存 ${amount} ml，連線後會自動同步`
-          : `已記錄 ${amount} ml`,
+          : getDrinkSuccessMessage(amount, energyPreview, waterMlAfterLog, goalMl),
         queuedOffline ? 'info' : 'success',
       );
       if (successTimerRef.current !== null) {
@@ -97,6 +115,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       showToast(message, 'error');
     } finally {
       setBusyAmount(null);
+    }
+  };
+
+  const handleAttack = () => {
+    const feedback = game.attack();
+    if (!feedback) return;
+    if (feedback.defeated) {
+      showToast('擊敗今日 Boss！記得領取獎勵', 'success');
+    }
+  };
+
+  const handleClaimReward = () => {
+    const reward = game.claim();
+    if (reward) {
+      showToast(`已領取 ${reward.points} 點數與 ${reward.chests} 個寶箱`, 'success');
     }
   };
 
@@ -141,13 +174,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </div>
 
       <div className="dashboard-workspace">
-        <HydrationHero
-          totalMl={totalMl}
-          goalMl={goalMl}
-          percent={percent}
-          ble={bleDisplay}
-          onOpenBle={() => onNavigate('devices')}
-        />
+        <div className="dashboard-workspace__main">
+          {game.state && (
+            <BossBattleCard
+              state={game.state}
+              attackCheck={game.attackCheck}
+              attacksAvailable={game.attacksAvailable}
+              waterMlForNextAttack={game.waterMlForNextAttack}
+              lastAttack={game.lastAttack}
+              lastEnergyGain={game.lastEnergyGain}
+              lastReward={game.lastReward}
+              onAttack={handleAttack}
+              onClaimReward={handleClaimReward}
+              onLogWater={handleScrollToQuickDrink}
+            />
+          )}
+          <HydrationHero
+            totalMl={totalMl}
+            goalMl={goalMl}
+            percent={percent}
+            ble={bleDisplay}
+            onOpenBle={() => onNavigate('devices')}
+          />
+        </div>
         <div className="dashboard-workspace__side">
           <QuickDrinkGrid
             amounts={QUICK_AMOUNTS}

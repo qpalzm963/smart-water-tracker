@@ -1,6 +1,8 @@
+import { QUICK_DRINK_AMOUNTS_ML } from '../../game/gameConfig';
 import { BleConnectionStatus, DrinkRecord, UploadRecordPayload } from '../../types';
 
-export const QUICK_AMOUNTS = [150, 250, 350, 500] as const;
+/** Quick-drink amounts (Issue #3): shared with the hydration game energy preview. */
+export const QUICK_AMOUNTS = QUICK_DRINK_AMOUNTS_ML;
 
 export interface DashboardProgress {
   percent: number;

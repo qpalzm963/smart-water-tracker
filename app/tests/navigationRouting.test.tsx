@@ -74,6 +74,11 @@ describe('Navigation and View Routing Coverage', () => {
     expect(html).toContain('新增紀錄');
     expect(html).toContain('今日紀錄');
     expect(html).toContain('喝水節奏');
+    // Issue #3: the daily boss battle is the first visual on the dashboard.
+    expect(html).toContain('今日 BOSS');
+    expect(html).toContain('深海巨鯨');
+    expect(html).toContain('目前水能量');
+    expect(html.indexOf('今日 BOSS')).toBeLessThan(html.indexOf('今日總量'));
   });
 
   it('renders BleDeviceView with hardware controls, telemetry and live events table', () => {
