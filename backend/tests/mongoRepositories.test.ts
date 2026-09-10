@@ -1,4 +1,5 @@
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { Collection } from 'mongodb';
 import { getMongoDb, closeMongoConnection, ensureIndexes } from '../src/database/mongo';
 import { getRepositoryContainer, setRepositoryContainer } from '../src/repositories';
 
@@ -141,9 +142,16 @@ describe('MongoDB Repositories Layer (#13)', () => {
   });
 
   it('prevents TOCTOU race: concurrent claims with same old claimCode only allows one winner', async () => {
-    const { deviceRepository } = await getRepositoryContainer();
+    const { userRepository, deviceRepository } = await getRepositoryContainer();
 
     const initialOwner = 'user_owner_orig';
+    await userRepository.create({
+      id: initialOwner,
+      username: 'owner_orig_unique',
+      email: 'owner_orig@example.com',
+      passwordHash: 'hash',
+    });
+
     const deviceId = 'dev_concurrent_claim';
     await deviceRepository.create({
       id: deviceId,
@@ -192,31 +200,133 @@ describe('MongoDB Repositories Layer (#13)', () => {
     expect(claimLate).toBe(false);
   });
 
-  it('supports retryable cleanup: children are deleted before parent so failure leaves parent retryable', async () => {
-    const { userRepository, deviceRepository } = await getRepositoryContainer();
+  it('supports retryable cleanup on injected failure: cleans remaining child records and parent upon retry', async () => {
+    const { userRepository, deviceRepository, waterRecordRepository } = await getRepositoryContainer();
 
-    const userId = 'user_retry_test';
+    const userId = 'user_injected_fail_test';
     await userRepository.create({
       id: userId,
-      username: 'retry_cascade_user',
-      email: 'retry@example.com',
+      username: 'injected_user',
+      email: 'injected@example.com',
       passwordHash: 'hash',
     });
 
     await deviceRepository.create({
-      id: 'dev_retry_child',
+      id: 'dev_injected_child',
       userId,
-      deviceToken: 'dvt_retry_token',
+      deviceToken: 'dvt_injected_token',
     });
 
-    // Calling deleteById on a nonexistent user returns false cleanly
-    expect(await userRepository.deleteById('nonexistent_user')).toBe(false);
+    await waterRecordRepository.create({
+      id: 'rec_injected_child',
+      userId,
+      deviceId: 'dev_injected_child',
+      eventType: 'drink',
+      amountMl: 250,
+      occurredAt: new Date().toISOString(),
+      timeSynced: true,
+    });
 
-    // Deleting existing user succeeds
-    const deleted = await userRepository.deleteById(userId);
-    expect(deleted).toBe(true);
+    // Mock a transient failure during child cascade cleanup
+    const deleteManySpy = jest
+      .spyOn(Collection.prototype, 'deleteMany')
+      .mockRejectedValueOnce(new Error('Transient network error during cascade'));
 
-    // Repeated delete returns false (idempotent, no orphans)
-    expect(await userRepository.deleteById(userId)).toBe(false);
+    // First delete attempt fails due to the injected error
+    await expect(userRepository.deleteById(userId)).rejects.toThrow('Transient network error during cascade');
+
+    // Restore deleteMany
+    deleteManySpy.mockRestore();
+
+    // The user document still exists in DB so the operation can be retried safely
+    const userDocInDb = await testDb.collection('users').findOne({ _id: userId });
+    expect(userDocInDb).not.toBeNull();
+    expect(userDocInDb?.isDeleting).toBe(true);
+
+    // Retrying delete succeeds
+    const retrySuccess = await userRepository.deleteById(userId);
+    expect(retrySuccess).toBe(true);
+
+    // All records are cleanly deleted after retry
+    expect(await testDb.collection('users').findOne({ _id: userId })).toBeNull();
+    expect(await testDb.collection('devices').findOne({ _id: 'dev_injected_child' })).toBeNull();
+    expect(await testDb.collection('drink_records').findOne({ _id: 'rec_injected_child' })).toBeNull();
+  });
+
+  it('prevents dangling references during concurrent device unbind and record insert', async () => {
+    const { userRepository, deviceRepository, waterRecordRepository } = await getRepositoryContainer();
+
+    const userId = 'user_unbind_race_test';
+    await userRepository.create({
+      id: userId,
+      username: 'unbind_race_user',
+      email: 'unbind_race@example.com',
+      passwordHash: 'hash',
+    });
+
+    const deviceId = 'dev_unbind_race';
+    await deviceRepository.create({
+      id: deviceId,
+      userId,
+      deviceToken: 'dvt_unbind_race',
+    });
+
+    // Run device unbind and concurrent record creation simultaneously
+    const [unbindResult, recordResult] = await Promise.all([
+      deviceRepository.deleteById(deviceId, userId),
+      waterRecordRepository.create({
+        id: 'rec_during_unbind_race',
+        userId,
+        deviceId,
+        eventType: 'drink',
+        amountMl: 300,
+        occurredAt: new Date().toISOString(),
+        timeSynced: true,
+      }),
+    ]);
+
+    expect(unbindResult).toBe(true);
+    expect(recordResult.record).toBeDefined();
+
+    // Verify: device is deleted
+    expect(await deviceRepository.findById(deviceId)).toBeNull();
+
+    // Verify: record created in concurrent window has deviceId set to null (NO dangling reference!)
+    const savedRecord = await testDb.collection('drink_records').findOne({ _id: 'rec_during_unbind_race' });
+    expect(savedRecord).not.toBeNull();
+    expect(savedRecord?.deviceId).toBeNull();
+  });
+
+  it('prevents orphan child records during concurrent user deletion and record insert', async () => {
+    const { userRepository, waterRecordRepository } = await getRepositoryContainer();
+
+    const userId = 'user_delete_race_test';
+    await userRepository.create({
+      id: userId,
+      username: 'delete_race_user',
+      email: 'delete_race@example.com',
+      passwordHash: 'hash',
+    });
+
+    // Run user deletion and concurrent record creation simultaneously
+    const [deleteResult, recordResult] = await Promise.allSettled([
+      userRepository.deleteById(userId),
+      waterRecordRepository.create({
+        id: 'rec_during_user_delete_race',
+        userId,
+        eventType: 'drink',
+        amountMl: 350,
+        occurredAt: new Date().toISOString(),
+        timeSynced: true,
+      }),
+    ]);
+
+    expect(deleteResult.status).toBe('fulfilled');
+    expect((deleteResult as PromiseFulfilledResult<boolean>).value).toBe(true);
+
+    // If record creation ran after isDeleting was marked, it was rejected with USER_NOT_FOUND
+    // If it ran before, compensating sweep deleted it
+    const remainingRecord = await testDb.collection('drink_records').findOne({ _id: 'rec_during_user_delete_race' });
+    expect(remainingRecord).toBeNull();
   });
 });

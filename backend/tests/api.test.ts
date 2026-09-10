@@ -627,6 +627,51 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
         .send({ amountMl: 100 });
       expect(newReq.status).toBe(201);
     });
+
+    it('POST /api/v1/devices/:id/token/rotate returns 409 if ownership changed or device deleted during rotation', async () => {
+      const tempDevId = `dev_rotate_race_${Date.now()}`;
+      const bindRes = await request(app)
+        .post('/api/v1/devices')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({ deviceId: tempDevId, claimCode: 'SECRET_ROT_123' });
+      expect(bindRes.status).toBe(201);
+
+      // Simulate device deletion between read and write by intercepting findById
+      const { deviceRepository } = await getRepositoryContainer();
+      const origFindById = deviceRepository.findById.bind(deviceRepository);
+      jest.spyOn(deviceRepository, 'findById').mockImplementationOnce(async (id: string) => {
+        const found = await origFindById(id);
+        await deviceRepository.deleteById(id, userId);
+        return found;
+      });
+
+      const res = await request(app)
+        .post(`/api/v1/devices/${tempDevId}/token/rotate`)
+        .set('Authorization', `Bearer ${userToken}`);
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toContain('Failed to rotate device token');
+    });
+
+    it('POST /api/v1/devices handles concurrent first-time binds: one gets 201, other gets 409 (not 500)', async () => {
+      const concurrentDevId = `dev_concurrent_new_${Date.now()}`;
+
+      const [resA, resB] = await Promise.all([
+        request(app)
+          .post('/api/v1/devices')
+          .set('Authorization', `Bearer ${userToken}`)
+          .send({ deviceId: concurrentDevId, claimCode: 'CODE_A' }),
+        request(app)
+          .post('/api/v1/devices')
+          .set('Authorization', `Bearer ${user2Token}`)
+          .send({ deviceId: concurrentDevId, claimCode: 'CODE_B' }),
+      ]);
+
+      const statuses = [resA.status, resB.status];
+      expect(statuses).toContain(201);
+      expect(statuses).toContain(409);
+      expect(statuses).not.toContain(500);
+    });
   });
 
   describe('8. Concurrency & Idempotency Under Race Conditions', () => {

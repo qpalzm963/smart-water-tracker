@@ -8,6 +8,8 @@ import { DrinkRecord } from '../../types';
 import {
   MONGO_COLLECTIONS,
   MongoDrinkRecordDoc,
+  MongoUserDoc,
+  MongoDeviceDoc,
 } from '../../database/mongoCollections';
 
 export function toDrinkRecordDomain(doc: MongoDrinkRecordDoc): DrinkRecord {
@@ -26,8 +28,10 @@ export function toDrinkRecordDomain(doc: MongoDrinkRecordDoc): DrinkRecord {
 
 export class MongoWaterRecordRepository implements IWaterRecordRepository {
   private collection: Collection<MongoDrinkRecordDoc>;
+  private db: Db;
 
   constructor(db: Db) {
+    this.db = db;
     this.collection = db.collection<MongoDrinkRecordDoc>(
       MONGO_COLLECTIONS.DRINK_RECORDS
     );
@@ -36,12 +40,35 @@ export class MongoWaterRecordRepository implements IWaterRecordRepository {
   async create(
     input: CreateWaterRecordInput
   ): Promise<{ record: DrinkRecord; isDuplicate: boolean }> {
+    // Verify parent user exists and is not being deleted
+    const parentUser = await this.db.collection<MongoUserDoc>(MONGO_COLLECTIONS.USERS).findOne(
+      { _id: input.userId, isDeleting: { $ne: true } },
+      { projection: { _id: 1 } }
+    );
+    if (!parentUser) {
+      const err: any = new Error('User does not exist or account is being deleted');
+      err.code = 'USER_NOT_FOUND';
+      throw err;
+    }
+
+    let finalDeviceId = input.deviceId ?? null;
+    if (finalDeviceId) {
+      const parentDevice = await this.db.collection<MongoDeviceDoc>(MONGO_COLLECTIONS.DEVICES).findOne(
+        { _id: finalDeviceId, userId: input.userId, isDeleting: { $ne: true } },
+        { projection: { _id: 1 } }
+      );
+      if (!parentDevice) {
+        // Device no longer exists or is being deleted: set deviceId to null to prevent dangling reference
+        finalDeviceId = null;
+      }
+    }
+
     const now = new Date().toISOString();
     const doc: MongoDrinkRecordDoc = {
       _id: input.id,
       eventId: input.eventId ?? null,
       userId: input.userId,
-      deviceId: input.deviceId ?? null,
+      deviceId: finalDeviceId,
       eventType: input.eventType,
       amountMl: input.amountMl,
       remainingMl: input.remainingMl ?? null,

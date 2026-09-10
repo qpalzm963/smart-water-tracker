@@ -120,14 +120,33 @@ export async function bindDevice(
     const deviceToken = `dvt_${crypto.randomBytes(24).toString('hex')}`;
     const now = new Date().toISOString();
 
-    await deviceRepository.create({
-      id: deviceId,
-      userId,
-      deviceToken,
-      claimCode: claimCode || null,
-      name: name || null,
-      createdAt: now,
-    });
+    try {
+      await deviceRepository.create({
+        id: deviceId,
+        userId,
+        deviceToken,
+        claimCode: claimCode || null,
+        name: name || null,
+        createdAt: now,
+      });
+    } catch (createErr: any) {
+      if (createErr.code === 'USER_NOT_FOUND') {
+        res.status(404).json({ error: 'User not found or account is being deleted' });
+        return;
+      }
+      if (
+        createErr.code === 11000 ||
+        createErr.message?.includes('E11000') ||
+        createErr.message?.includes('duplicate key') ||
+        createErr.message?.includes('UNIQUE constraint failed')
+      ) {
+        res.status(409).json({
+          error: 'Device is already bound. Provide the current claimCode and a BLE-rotated newClaimCode to transfer ownership.',
+        });
+        return;
+      }
+      throw createErr;
+    }
 
     const response: DeviceResponse = {
       id: deviceId,
@@ -202,7 +221,14 @@ export async function rotateDeviceToken(
     }
 
     const newDeviceToken = `dvt_${crypto.randomBytes(24).toString('hex')}`;
-    await deviceRepository.rotateToken(deviceId, userId, newDeviceToken);
+    const rotated = await deviceRepository.rotateToken(deviceId, userId, newDeviceToken);
+
+    if (!rotated) {
+      res.status(409).json({
+        error: 'Failed to rotate device token. Device not found or ownership changed.',
+      });
+      return;
+    }
 
     res.status(200).json({
       deviceId,

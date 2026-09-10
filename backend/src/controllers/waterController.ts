@@ -174,38 +174,46 @@ export async function recordWaterEvent(
     const recordId = uuidv4();
     const remainingMl = payload.remainingMl !== undefined ? payload.remainingMl : null;
 
-    const { record, isDuplicate } = await waterRecordRepository.create({
-      id: recordId,
-      eventId: payload.eventId || null,
-      userId,
-      deviceId,
-      eventType,
-      amountMl: payload.amountMl,
-      remainingMl,
-      occurredAt: occurredAtIso,
-      timeSynced,
-      syncedAt: syncedAtIso,
-    });
-
-    if (isDuplicate) {
-      res.status(200).json({
-        message: 'Record already exists (idempotent)',
-        record: formatRecordResponse(record),
-        duplicated: true,
+    try {
+      const { record, isDuplicate } = await waterRecordRepository.create({
+        id: recordId,
+        eventId: payload.eventId || null,
+        userId,
+        deviceId,
+        eventType,
+        amountMl: payload.amountMl,
+        remainingMl,
+        occurredAt: occurredAtIso,
+        timeSynced,
+        syncedAt: syncedAtIso,
       });
-      return;
-    }
 
-    // Update device last_seen_at if deviceId is known and belongs to this user
-    if (deviceId) {
-      await deviceRepository.updateLastSeen(deviceId, userId, syncedAtIso);
-    }
+      if (isDuplicate) {
+        res.status(200).json({
+          message: 'Record already exists (idempotent)',
+          record: formatRecordResponse(record),
+          duplicated: true,
+        });
+        return;
+      }
 
-    res.status(201).json({
-      message: 'Record saved successfully',
-      record: formatRecordResponse(record),
-      duplicated: false,
-    });
+      // Update device last_seen_at if deviceId is known and belongs to this user
+      if (deviceId) {
+        await deviceRepository.updateLastSeen(deviceId, userId, syncedAtIso);
+      }
+
+      res.status(201).json({
+        message: 'Record saved successfully',
+        record: formatRecordResponse(record),
+        duplicated: false,
+      });
+    } catch (err: any) {
+      if (err.code === 'USER_NOT_FOUND') {
+        res.status(404).json({ error: 'User not found or account is being deleted' });
+        return;
+      }
+      throw err;
+    }
   } catch (err) {
     next(err);
   }

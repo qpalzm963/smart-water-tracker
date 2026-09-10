@@ -43,6 +43,7 @@ export class MongoUserRepository implements IUserRepository {
       dailyGoalMl: input.dailyGoalMl ?? 2000,
       createdAt: input.createdAt ?? now,
       updatedAt: input.updatedAt ?? now,
+      isDeleting: false,
     };
 
     try {
@@ -65,7 +66,7 @@ export class MongoUserRepository implements IUserRepository {
   }
 
   async findById(id: string): Promise<User | null> {
-    const doc = await this.collection.findOne({ _id: id });
+    const doc = await this.collection.findOne({ _id: id, isDeleting: { $ne: true } });
     return doc ? toUserDomain(doc) : null;
   }
 
@@ -73,6 +74,7 @@ export class MongoUserRepository implements IUserRepository {
     const doc = await this.collection.findOne(
       {
         $or: [{ username: identifier }, { email: identifier }],
+        isDeleting: { $ne: true },
       },
       {
         collation: { locale: 'en', strength: 2 },
@@ -93,7 +95,7 @@ export class MongoUserRepository implements IUserRepository {
     }
 
     const res = await this.collection.findOneAndUpdate(
-      { _id: id },
+      { _id: id, isDeleting: { $ne: true } },
       { $set: updateDoc },
       { returnDocument: 'after' }
     );
@@ -102,21 +104,34 @@ export class MongoUserRepository implements IUserRepository {
   }
 
   async deleteById(id: string): Promise<boolean> {
-    const user = await this.collection.findOne({ _id: id });
-    if (!user) {
+    // Step 1: Mark user as deleting to immediately reject new concurrent child writes
+    const marked = await this.collection.findOneAndUpdate(
+      { _id: id, isDeleting: { $ne: true } },
+      { $set: { isDeleting: true } }
+    );
+    const existing = marked || (await this.collection.findOne({ _id: id }));
+    if (!existing) {
       return false;
     }
 
-    // Step 1: Cascade deletion of dependent records FIRST before deleting the user.
-    // This guarantees that any transient failure leaves the user intact so the operation can be retried safely.
+    // Step 2: Cascade deletion of dependent records FIRST before deleting the user.
+    // Guarantees that any transient failure leaves the user intact (in deleting state) for retry.
     await Promise.all([
       this.db.collection(MONGO_COLLECTIONS.DEVICES).deleteMany({ userId: id }),
       this.db.collection(MONGO_COLLECTIONS.DRINK_RECORDS).deleteMany({ userId: id }),
       this.db.collection(MONGO_COLLECTIONS.DELETED_WATER_EVENTS).deleteMany({ userId: id }),
     ]);
 
-    // Step 2: Delete user document only after dependent children are cleared.
+    // Step 3: Delete user document
     const res = await this.collection.deleteOne({ _id: id });
-    return res.deletedCount > 0;
+
+    // Step 4: Post-delete compensating sweep to ensure no late-arriving concurrent request left orphan data
+    await Promise.all([
+      this.db.collection(MONGO_COLLECTIONS.DEVICES).deleteMany({ userId: id }),
+      this.db.collection(MONGO_COLLECTIONS.DRINK_RECORDS).deleteMany({ userId: id }),
+      this.db.collection(MONGO_COLLECTIONS.DELETED_WATER_EVENTS).deleteMany({ userId: id }),
+    ]);
+
+    return res.deletedCount > 0 || !!existing;
   }
 }
