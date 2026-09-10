@@ -4,7 +4,7 @@
   "description": "RESTful API Backend for Smart Water Tracker",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "NODE_OPTIONS='--experimental-sqlite' tsx watch src/server.ts",
+    "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "prestart": "npm run build",
     "start": "node dist/server.js",

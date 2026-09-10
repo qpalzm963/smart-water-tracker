@@ -18,9 +18,14 @@ export function errorHandler(
     return;
   }
 
-  console.error('Unhandled error:', err);
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  const sanitizedMessage = rawMessage
+    .replace(/mongodb(?:\+srv)?:\/\/[^\s@]+@/gi, 'mongodb+srv://***:***@')
+    .replace(/dvt_[a-f0-9]{32,64}/gi, 'dvt_***');
+
+  console.error('Unhandled error:', sanitizedMessage);
   res.status(500).json({
     error: 'Internal server error',
-    message: err instanceof Error ? err.message : 'Unknown error',
+    message: process.env.NODE_ENV === 'production' ? 'An unexpected error occurred' : sanitizedMessage,
   });
 }

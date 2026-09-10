@@ -7,8 +7,7 @@ import userRoutes from './routes/user';
 import deviceRoutes from './routes/devices';
 import waterRoutes from './routes/water';
 import { errorHandler } from './middleware/errorHandler';
-import { getMongoDb, ensureIndexes } from './database/mongo';
-import { getRepositoryContainer, hasActiveRepositoryContainer } from './repositories';
+import { getRepositoryContainer, hasActiveRepositoryContainer, initializePersistence } from './repositories';
 
 function getPublicDir(): string {
   const candidates = [
@@ -28,15 +27,18 @@ function getPublicDir(): string {
 }
 
 let dbInitPromise: Promise<void> | null = null;
+
+export function resetDbInitPromise(): void {
+  dbInitPromise = null;
+}
+
 function ensureMongoReady(): Promise<void> {
   if (hasActiveRepositoryContainer()) {
     return Promise.resolve();
   }
   if (!dbInitPromise) {
     dbInitPromise = (async () => {
-      const db = await getMongoDb();
-      await ensureIndexes(db);
-      await getRepositoryContainer(db);
+      await initializePersistence();
     })().catch((err) => {
       dbInitPromise = null;
       throw err;

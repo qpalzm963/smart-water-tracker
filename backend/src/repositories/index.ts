@@ -26,9 +26,6 @@ export interface RepositoryContainer {
 
 let activeContainer: RepositoryContainer | null = null;
 
-export function hasActiveRepositoryContainer(): boolean {
-  return activeContainer !== null;
-}
 
 export function setRepositoryContainer(
   container: RepositoryContainer | null

@@ -1,5 +1,3 @@
-import { createApp } from '../backend/src/app';
-
-const app = createApp();
+import app from '../backend/src/serverless';
 
 export default app;
