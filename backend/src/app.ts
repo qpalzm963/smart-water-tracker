@@ -8,6 +8,7 @@ import deviceRoutes from './routes/devices';
 import waterRoutes from './routes/water';
 import { errorHandler } from './middleware/errorHandler';
 import { getRepositoryContainer, hasActiveRepositoryContainer, initializePersistence } from './repositories';
+import { config, parseAllowedOrigins } from './config/env';
 
 function getPublicDir(): string {
   const candidates = [
@@ -47,6 +48,59 @@ function ensureMongoReady(): Promise<void> {
   return dbInitPromise;
 }
 
+export function createCorsMiddleware(): express.RequestHandler {
+  return cors((req, callback) => {
+    const origin = req.headers.origin;
+
+    // 1. Requests without Origin header (e.g. ESP32 firmware, curl, mobile apps, same-origin GET/HEAD)
+    if (!origin) {
+      return callback(null, { origin: true, credentials: true });
+    }
+
+    const host = (req.headers['x-forwarded-host'] as string) || req.headers.host;
+
+    // Derive the server scheme: trust X-Forwarded-Proto (set by Vercel / load balancer), then
+    // fall back to the connection's own TLS state. Never infer scheme from the Origin header.
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim()
+      ?? (req.socket && (req.socket as { encrypted?: boolean }).encrypted ? 'https' : 'http');
+
+    // 2. Same-origin check: scheme AND host must both match (mirrors browser Same-Origin Policy).
+    //    http://example.com vs https://example.com are DIFFERENT origins.
+    if (host) {
+      const expectedOrigin = `${proto}://${host}`;
+      if (origin.toLowerCase() === expectedOrigin.toLowerCase()) {
+        return callback(null, { origin: true, credentials: true });
+      }
+    }
+
+    // 3. Explicitly configured ALLOWED_ORIGINS whitelist
+    const allowed = process.env.ALLOWED_ORIGINS !== undefined
+      ? parseAllowedOrigins(process.env.ALLOWED_ORIGINS)
+      : config.allowedOrigins;
+
+    if (allowed.length > 0) {
+      if (allowed.includes('*')) {
+        return callback(null, { origin: true });
+      }
+      if (allowed.includes(origin)) {
+        return callback(null, { origin: true, credentials: true });
+      }
+      return callback(null, { origin: false });
+    }
+
+    // 4. Non-production environments (development / test) default allow localhost / 127.0.0.1
+    const currentEnv = process.env.NODE_ENV || config.nodeEnv;
+    if (currentEnv !== 'production') {
+      if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        return callback(null, { origin: true, credentials: true });
+      }
+    }
+
+    // 5. Production without explicit ALLOWED_ORIGINS: disallow untrusted cross-origin requests
+    return callback(null, { origin: false });
+  });
+}
+
 export function createApp(): express.Express {
   const app = express();
   const publicDir = getPublicDir();
@@ -55,7 +109,7 @@ export function createApp(): express.Express {
   app.set('trust proxy', 1);
 
   // Middleware
-  app.use(cors());
+  app.use(createCorsMiddleware());
   app.use(express.json({ limit: '1mb' }));
 
   // Static Dashboard Assets (optional in production / serverless)
