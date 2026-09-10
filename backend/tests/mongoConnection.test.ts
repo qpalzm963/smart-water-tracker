@@ -47,6 +47,19 @@ describe('MongoDB Connection Layer and Index Management (#12)', () => {
     expect(db1.databaseName).toBe(dbName);
   });
 
+  it('correctly isolates cache by URI and database name when overrides are provided', async () => {
+    const dbA = await getMongoDb('db_a', uri);
+    const dbB = await getMongoDb('db_b', uri);
+
+    expect(dbA.databaseName).toBe('db_a');
+    expect(dbB.databaseName).toBe('db_b');
+    expect(dbA).not.toBe(dbB);
+
+    // Calling again with db_a returns the exact same cached instance
+    const dbA2 = await getMongoDb('db_a', uri);
+    expect(dbA2).toBe(dbA);
+  });
+
   it('safely handles concurrent cold-start requests without creating duplicate clients', async () => {
     // Ensure connection is fully closed first
     await closeMongoConnection();

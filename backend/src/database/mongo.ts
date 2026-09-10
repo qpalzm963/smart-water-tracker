@@ -2,28 +2,31 @@ import { MongoClient, Db, MongoClientOptions } from 'mongodb';
 import { config } from '../config/env';
 import { MONGO_COLLECTIONS } from './mongoCollections';
 
-let clientPromise: Promise<MongoClient> | null = null;
-let cachedClient: MongoClient | null = null;
-let cachedDb: Db | null = null;
+const clientPromises = new Map<string, Promise<MongoClient>>();
+const cachedClients = new Map<string, MongoClient>();
+const cachedDbs = new Map<string, Db>();
 
 /**
  * Get or initialize MongoDB client instance.
- * Caches the connection Promise in-memory to prevent cold-start concurrency races
- * across simultaneous serverless invocations.
+ * Caches connection Promises keyed by connection URI to prevent cold-start
+ * concurrency races while correctly isolating different connection endpoints.
  */
 export async function getMongoClient(
   uri?: string,
   options?: MongoClientOptions
 ): Promise<MongoClient> {
-  if (cachedClient) {
-    return cachedClient;
-  }
-
-  if (clientPromise) {
-    return clientPromise;
-  }
-
   const connectionUri = uri || config.mongodbUri;
+
+  const existingClient = cachedClients.get(connectionUri);
+  if (existingClient) {
+    return existingClient;
+  }
+
+  const existingPromise = clientPromises.get(connectionUri);
+  if (existingPromise) {
+    return existingPromise;
+  }
+
   const client = new MongoClient(connectionUri, {
     maxPoolSize: 10,
     minPoolSize: 1,
@@ -31,56 +34,73 @@ export async function getMongoClient(
     ...options,
   });
 
-  clientPromise = (async () => {
+  const promise = (async () => {
     try {
       await client.connect();
-      cachedClient = client;
+      cachedClients.set(connectionUri, client);
       return client;
     } catch (err) {
-      clientPromise = null;
-      cachedClient = null;
+      clientPromises.delete(connectionUri);
+      cachedClients.delete(connectionUri);
       throw err;
     }
   })();
 
-  return clientPromise;
+  clientPromises.set(connectionUri, promise);
+  return promise;
 }
 
 /**
  * Get or initialize MongoDB database instance.
+ * Isolates cache by target URI and database name to prevent cross-database leakage.
  */
 export async function getMongoDb(dbName?: string, uri?: string): Promise<Db> {
-  if (cachedDb) {
-    return cachedDb;
+  const targetUri = uri || config.mongodbUri;
+  const targetDbName = dbName || config.mongodbDbName;
+  const cacheKey = `${targetUri}::${targetDbName}`;
+
+  const existingDb = cachedDbs.get(cacheKey);
+  if (existingDb) {
+    return existingDb;
   }
 
-  const client = await getMongoClient(uri);
-  const targetDbName = dbName || config.mongodbDbName;
-  cachedDb = client.db(targetDbName);
-  return cachedDb;
+  const client = await getMongoClient(targetUri);
+  const db = client.db(targetDbName);
+  cachedDbs.set(cacheKey, db);
+  return db;
 }
 
 /**
- * Closes the active MongoDB connection.
+ * Closes active MongoDB connections.
  * Used during graceful shutdown and after integration test runs.
  */
 export async function closeMongoConnection(): Promise<void> {
-  if (clientPromise) {
+  const clientsToClose = new Set<MongoClient>();
+
+  for (const client of cachedClients.values()) {
+    clientsToClose.add(client);
+  }
+
+  for (const promise of clientPromises.values()) {
     try {
-      const client = await clientPromise;
-      await client.close();
+      const client = await promise;
+      clientsToClose.add(client);
     } catch {
       // Ignore errors if client failed to connect initially
-    } finally {
-      clientPromise = null;
-      cachedClient = null;
-      cachedDb = null;
     }
-  } else if (cachedClient) {
-    await cachedClient.close();
-    cachedClient = null;
-    cachedDb = null;
   }
+
+  for (const client of clientsToClose) {
+    try {
+      await client.close();
+    } catch {
+      // Ignore close errors
+    }
+  }
+
+  clientPromises.clear();
+  cachedClients.clear();
+  cachedDbs.clear();
 }
 
 /**
