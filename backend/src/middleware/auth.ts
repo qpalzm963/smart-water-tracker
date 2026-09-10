@@ -1,8 +1,8 @@
 import { Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env';
-import { getDatabase } from '../database/db';
-import { AuthenticatedRequest, JwtUserPayload, Device } from '../types';
+import { getRepositoryContainer } from '../repositories';
+import { AuthenticatedRequest, JwtUserPayload } from '../types';
 
 export function authenticateUser(
   req: AuthenticatedRequest,
@@ -26,11 +26,11 @@ export function authenticateUser(
   }
 }
 
-export function authenticateDevice(
+export async function authenticateDevice(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Missing or invalid Authorization header for device' });
@@ -38,30 +38,33 @@ export function authenticateDevice(
   }
 
   const token = authHeader.substring(7).trim();
-  const db = getDatabase();
-  const device = db.prepare('SELECT id, user_id FROM devices WHERE device_token = ?').get(token) as unknown as
-    | Pick<Device, 'id' | 'user_id'>
-    | undefined;
 
-  if (!device) {
-    res.status(401).json({ error: 'Unauthorized device token' });
-    return;
+  try {
+    const { deviceRepository } = await getRepositoryContainer();
+    const device = await deviceRepository.findByToken(token);
+
+    if (!device) {
+      res.status(401).json({ error: 'Unauthorized device token' });
+      return;
+    }
+
+    req.device = { id: device.id, userId: device.user_id };
+    req.user = { id: device.user_id };
+    next();
+  } catch (err) {
+    next(err);
   }
-
-  req.device = { id: device.id, userId: device.user_id };
-  req.user = { id: device.user_id };
-  next();
 }
 
 /**
  * Allows either User JWT or Device Token.
  * Fast-path: checks cryptographically verified JWT first; if failed, checks Device Token in DB.
  */
-export function authenticateUserOrDevice(
+export async function authenticateUserOrDevice(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Missing Authorization header' });
@@ -80,16 +83,18 @@ export function authenticateUserOrDevice(
   }
 
   // 2. Try Device Token
-  const db = getDatabase();
-  const device = db.prepare('SELECT id, user_id FROM devices WHERE device_token = ?').get(token) as unknown as
-    | Pick<Device, 'id' | 'user_id'>
-    | undefined;
+  try {
+    const { deviceRepository } = await getRepositoryContainer();
+    const device = await deviceRepository.findByToken(token);
 
-  if (device) {
-    req.device = { id: device.id, userId: device.user_id };
-    req.user = { id: device.user_id };
-    return next();
+    if (device) {
+      req.device = { id: device.id, userId: device.user_id };
+      req.user = { id: device.user_id };
+      return next();
+    }
+
+    res.status(401).json({ error: 'Invalid token (neither valid user JWT nor device token)' });
+  } catch (err) {
+    next(err);
   }
-
-  res.status(401).json({ error: 'Invalid token (neither valid user JWT nor device token)' });
 }

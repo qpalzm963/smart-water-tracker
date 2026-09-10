@@ -2,12 +2,16 @@ import request from 'supertest';
 import fs from 'fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
+import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createApp } from '../src/app';
 import { initDatabase, closeDatabase, migrateDatabase } from '../src/database/db';
+import { getMongoDb, closeMongoConnection, ensureIndexes } from '../src/database/mongo';
+import { getRepositoryContainer, setRepositoryContainer } from '../src/repositories';
 import { Express } from 'express';
 
 describe('Smart Water Tracker Backend API Test Suite', () => {
   let app: Express;
+  let mongoServer: MongoMemoryServer;
   let userToken: string;
   let userId: string;
   let deviceToken: string;
@@ -15,15 +19,26 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
   const testPassword = 'Password123!';
   const testDeviceId = `water_test_${Date.now().toString(16)}`;
 
-  beforeAll(() => {
-    // Initialize in-memory SQLite database for testing
+  beforeAll(async () => {
+    mongoServer = await MongoMemoryServer.create();
+    const uri = mongoServer.getUri();
+    const db = await getMongoDb('test_api_db', uri);
+    await ensureIndexes(db);
+    await getRepositoryContainer(db);
+
+    // Initialize in-memory SQLite database for legacy migration tests
     initDatabase(':memory:');
     app = createApp();
-  });
+  }, 60000);
 
-  afterAll(() => {
+  afterAll(async () => {
     closeDatabase();
-  });
+    setRepositoryContainer(null);
+    await closeMongoConnection();
+    if (mongoServer) {
+      await mongoServer.stop();
+    }
+  }, 30000);
 
   describe('1. Health Check', () => {
     it('GET /api/v1/health should return ok status', async () => {

@@ -1,8 +1,8 @@
 import { Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { z } from 'zod';
-import { getDatabase } from '../database/db';
-import { AuthenticatedRequest, Device, DeviceResponse } from '../types';
+import { getRepositoryContainer } from '../repositories';
+import { AuthenticatedRequest, DeviceResponse } from '../types';
 
 const bindDeviceSchema = z
   .object({
@@ -30,7 +30,11 @@ function maskToken(token: string): string {
   return `${token.substring(0, 4)}****${token.substring(token.length - 4)}`;
 }
 
-export function bindDevice(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+export async function bindDevice(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
   try {
     const userId = req.user?.id;
     if (!userId) {
@@ -40,11 +44,9 @@ export function bindDevice(req: AuthenticatedRequest, res: Response, next: NextF
 
     const { deviceId: rawDeviceId, id: rawId, claimCode, newClaimCode, name } = bindDeviceSchema.parse(req.body);
     const deviceId = (rawDeviceId || rawId)!;
-    const db = getDatabase();
+    const { deviceRepository } = await getRepositoryContainer();
 
-    const existingDevice = db.prepare('SELECT * FROM devices WHERE id = ?').get(deviceId) as unknown as
-      | Device
-      | undefined;
+    const existingDevice = await deviceRepository.findById(deviceId);
 
     if (existingDevice) {
       if (existingDevice.user_id !== userId) {
@@ -57,14 +59,16 @@ export function bindDevice(req: AuthenticatedRequest, res: Response, next: NextF
             return;
           }
 
-          // The caller proves possession with the old secret and supplies the
-          // replacement secret already persisted on the physical device.
           const newDeviceToken = `dvt_${crypto.randomBytes(24).toString('hex')}`;
           const now = new Date().toISOString();
 
-          db.prepare(
-            `UPDATE devices SET user_id = ?, device_token = ?, claim_code = ?, name = ?, created_at = ? WHERE id = ?`
-          ).run(userId, newDeviceToken, newClaimCode, name || existingDevice.name || null, now, deviceId);
+          await deviceRepository.claimDevice(deviceId, {
+            userId,
+            deviceToken: newDeviceToken,
+            claimCode: newClaimCode,
+            name: name || existingDevice.name || null,
+            createdAt: now,
+          });
 
           const response: DeviceResponse = {
             id: deviceId,
@@ -107,10 +111,14 @@ export function bindDevice(req: AuthenticatedRequest, res: Response, next: NextF
     const deviceToken = `dvt_${crypto.randomBytes(24).toString('hex')}`;
     const now = new Date().toISOString();
 
-    db.prepare(
-      `INSERT INTO devices (id, user_id, device_token, claim_code, name, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(deviceId, userId, deviceToken, claimCode || null, name || null, now);
+    await deviceRepository.create({
+      id: deviceId,
+      userId,
+      deviceToken,
+      claimCode: claimCode || null,
+      name: name || null,
+      createdAt: now,
+    });
 
     const response: DeviceResponse = {
       id: deviceId,
@@ -131,7 +139,11 @@ export function bindDevice(req: AuthenticatedRequest, res: Response, next: NextF
   }
 }
 
-export function listDevices(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+export async function listDevices(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
   try {
     const userId = req.user?.id;
     if (!userId) {
@@ -139,12 +151,9 @@ export function listDevices(req: AuthenticatedRequest, res: Response, next: Next
       return;
     }
 
-    const db = getDatabase();
-    const devices = db
-      .prepare('SELECT * FROM devices WHERE user_id = ? ORDER BY created_at DESC')
-      .all(userId) as unknown as Device[];
+    const { deviceRepository } = await getRepositoryContainer();
+    const devices = await deviceRepository.findByUserId(userId);
 
-    // Return masked tokens in list view to prevent credential leakage
     const response: DeviceResponse[] = devices.map((d) => ({
       id: d.id,
       name: d.name,
@@ -161,7 +170,11 @@ export function listDevices(req: AuthenticatedRequest, res: Response, next: Next
   }
 }
 
-export function rotateDeviceToken(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+export async function rotateDeviceToken(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
   try {
     const userId = req.user?.id;
     const deviceId = req.params.id;
@@ -171,22 +184,16 @@ export function rotateDeviceToken(req: AuthenticatedRequest, res: Response, next
       return;
     }
 
-    const db = getDatabase();
-    const device = db
-      .prepare('SELECT id FROM devices WHERE id = ? AND user_id = ?')
-      .get(deviceId, userId) as unknown as Pick<Device, 'id'> | undefined;
+    const { deviceRepository } = await getRepositoryContainer();
+    const device = await deviceRepository.findById(deviceId);
 
-    if (!device) {
+    if (!device || device.user_id !== userId) {
       res.status(404).json({ error: 'Device not found or not owned by you' });
       return;
     }
 
     const newDeviceToken = `dvt_${crypto.randomBytes(24).toString('hex')}`;
-    db.prepare('UPDATE devices SET device_token = ? WHERE id = ? AND user_id = ?').run(
-      newDeviceToken,
-      deviceId,
-      userId
-    );
+    await deviceRepository.rotateToken(deviceId, userId, newDeviceToken);
 
     res.status(200).json({
       deviceId,
@@ -198,7 +205,11 @@ export function rotateDeviceToken(req: AuthenticatedRequest, res: Response, next
   }
 }
 
-export function unbindDevice(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+export async function unbindDevice(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
   try {
     const userId = req.user?.id;
     const deviceId = req.params.id;
@@ -208,15 +219,13 @@ export function unbindDevice(req: AuthenticatedRequest, res: Response, next: Nex
       return;
     }
 
-    const db = getDatabase();
-    const device = db.prepare('SELECT id FROM devices WHERE id = ? AND user_id = ?').get(deviceId, userId);
+    const { deviceRepository } = await getRepositoryContainer();
+    const success = await deviceRepository.deleteById(deviceId, userId);
 
-    if (!device) {
+    if (!success) {
       res.status(404).json({ error: 'Device not found or not owned by you' });
       return;
     }
-
-    db.prepare('DELETE FROM devices WHERE id = ? AND user_id = ?').run(deviceId, userId);
 
     res.status(200).json({ success: true, message: 'Device unbound and token revoked successfully' });
   } catch (err) {
@@ -224,7 +233,11 @@ export function unbindDevice(req: AuthenticatedRequest, res: Response, next: Nex
   }
 }
 
-export function getDeviceStatus(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+export async function getDeviceStatus(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
   try {
     const userId = req.user?.id;
     const deviceId = req.params.id;
@@ -234,12 +247,10 @@ export function getDeviceStatus(req: AuthenticatedRequest, res: Response, next: 
       return;
     }
 
-    const db = getDatabase();
-    const device = db
-      .prepare('SELECT * FROM devices WHERE id = ? AND user_id = ?')
-      .get(deviceId, userId) as unknown as Device | undefined;
+    const { deviceRepository } = await getRepositoryContainer();
+    const device = await deviceRepository.findById(deviceId);
 
-    if (!device) {
+    if (!device || device.user_id !== userId) {
       res.status(404).json({ error: 'Device not found or not owned by you' });
       return;
     }
