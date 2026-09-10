@@ -1,7 +1,7 @@
 import { Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { getDatabase } from '../database/db';
-import { AuthenticatedRequest, User, UserResponse } from '../types';
+import { getRepositoryContainer } from '../repositories';
+import { AuthenticatedRequest, UserResponse } from '../types';
 import { usernameFromLegacyEmail } from '../utils/username';
 
 const updateProfileSchema = z.object({
@@ -9,7 +9,11 @@ const updateProfileSchema = z.object({
   dailyGoalMl: z.number().int().min(100).max(10000).optional(),
 });
 
-export function getProfile(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+export async function getProfile(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
   try {
     const userId = req.user?.id;
     if (!userId) {
@@ -17,8 +21,8 @@ export function getProfile(req: AuthenticatedRequest, res: Response, next: NextF
       return;
     }
 
-    const db = getDatabase();
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as User | undefined;
+    const { userRepository } = await getRepositoryContainer();
+    const user = await userRepository.findById(userId);
     if (!user) {
       res.status(404).json({ error: 'User not found' });
       return;
@@ -39,7 +43,11 @@ export function getProfile(req: AuthenticatedRequest, res: Response, next: NextF
   }
 }
 
-export function updateProfile(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+export async function updateProfile(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
   try {
     const userId = req.user?.id;
     if (!userId) {
@@ -48,31 +56,31 @@ export function updateProfile(req: AuthenticatedRequest, res: Response, next: Ne
     }
 
     const { displayName, dailyGoalMl } = updateProfileSchema.parse(req.body);
-    const db = getDatabase();
-    const now = new Date().toISOString();
+    const { userRepository } = await getRepositoryContainer();
 
-    const currentUser = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as User | undefined;
+    const currentUser = await userRepository.findById(userId);
     if (!currentUser) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
 
-    const updatedDisplayName = displayName !== undefined ? displayName : currentUser.display_name;
-    const updatedDailyGoal = dailyGoalMl !== undefined ? dailyGoalMl : currentUser.daily_goal_ml;
+    const updatedUser = await userRepository.updateProfile(userId, {
+      displayName,
+      dailyGoalMl,
+    });
 
-    db.prepare(
-      `UPDATE users
-       SET display_name = ?, daily_goal_ml = ?, updated_at = ?
-       WHERE id = ?`
-    ).run(updatedDisplayName, updatedDailyGoal, now, userId);
+    if (!updatedUser) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
 
     const response: UserResponse = {
       id: userId,
-      username: currentUser.username || usernameFromLegacyEmail(currentUser.email, currentUser.id),
-      email: currentUser.email,
-      displayName: updatedDisplayName,
-      dailyGoalMl: updatedDailyGoal,
-      createdAt: currentUser.created_at,
+      username: updatedUser.username || usernameFromLegacyEmail(updatedUser.email, updatedUser.id),
+      email: updatedUser.email,
+      displayName: updatedUser.display_name,
+      dailyGoalMl: updatedUser.daily_goal_ml,
+      createdAt: updatedUser.created_at,
     };
 
     res.status(200).json({ user: response });

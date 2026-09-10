@@ -2,12 +2,17 @@ import request from 'supertest';
 import fs from 'fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
+import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createApp } from '../src/app';
 import { initDatabase, closeDatabase, migrateDatabase } from '../src/database/db';
-import { Express } from 'express';
+import { getMongoDb, closeMongoConnection, ensureIndexes } from '../src/database/mongo';
+import { getRepositoryContainer, setRepositoryContainer } from '../src/repositories';
+import http from 'http';
 
 describe('Smart Water Tracker Backend API Test Suite', () => {
-  let app: Express;
+  let app: any;
+  let server: http.Server;
+  let mongoServer: MongoMemoryServer;
   let userToken: string;
   let userId: string;
   let deviceToken: string;
@@ -15,15 +20,31 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
   const testPassword = 'Password123!';
   const testDeviceId = `water_test_${Date.now().toString(16)}`;
 
-  beforeAll(() => {
-    // Initialize in-memory SQLite database for testing
-    initDatabase(':memory:');
-    app = createApp();
-  });
+  beforeAll(async () => {
+    mongoServer = await MongoMemoryServer.create();
+    const uri = mongoServer.getUri();
+    const db = await getMongoDb('test_api_db', uri);
+    await ensureIndexes(db);
+    await getRepositoryContainer(db);
 
-  afterAll(() => {
+    // Initialize in-memory SQLite database for legacy migration tests
+    initDatabase(':memory:');
+    const expressApp = createApp();
+    server = expressApp.listen(0);
+    app = server;
+  }, 60000);
+
+  afterAll(async () => {
     closeDatabase();
-  });
+    setRepositoryContainer(null);
+    await closeMongoConnection();
+    if (server) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    if (mongoServer) {
+      await mongoServer.stop();
+    }
+  }, 30000);
 
   describe('1. Health Check', () => {
     it('GET /api/v1/health should return ok status', async () => {
@@ -605,6 +626,51 @@ describe('Smart Water Tracker Backend API Test Suite', () => {
         .set('Authorization', `Bearer ${newDeviceToken}`)
         .send({ amountMl: 100 });
       expect(newReq.status).toBe(201);
+    });
+
+    it('POST /api/v1/devices/:id/token/rotate returns 409 if ownership changed or device deleted during rotation', async () => {
+      const tempDevId = `dev_rotate_race_${Date.now()}`;
+      const bindRes = await request(app)
+        .post('/api/v1/devices')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({ deviceId: tempDevId, claimCode: 'SECRET_ROT_123' });
+      expect(bindRes.status).toBe(201);
+
+      // Simulate device deletion between read and write by intercepting findById
+      const { deviceRepository } = await getRepositoryContainer();
+      const origFindById = deviceRepository.findById.bind(deviceRepository);
+      jest.spyOn(deviceRepository, 'findById').mockImplementationOnce(async (id: string) => {
+        const found = await origFindById(id);
+        await deviceRepository.deleteById(id, userId);
+        return found;
+      });
+
+      const res = await request(app)
+        .post(`/api/v1/devices/${tempDevId}/token/rotate`)
+        .set('Authorization', `Bearer ${userToken}`);
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toContain('Failed to rotate device token');
+    });
+
+    it('POST /api/v1/devices handles concurrent first-time binds: one gets 201, other gets 409 (not 500)', async () => {
+      const concurrentDevId = `dev_concurrent_new_${Date.now()}`;
+
+      const [resA, resB] = await Promise.all([
+        request(app)
+          .post('/api/v1/devices')
+          .set('Authorization', `Bearer ${userToken}`)
+          .send({ deviceId: concurrentDevId, claimCode: 'CODE_A' }),
+        request(app)
+          .post('/api/v1/devices')
+          .set('Authorization', `Bearer ${user2Token}`)
+          .send({ deviceId: concurrentDevId, claimCode: 'CODE_B' }),
+      ]);
+
+      const statuses = [resA.status, resB.status];
+      expect(statuses).toContain(201);
+      expect(statuses).toContain(409);
+      expect(statuses).not.toContain(500);
     });
   });
 

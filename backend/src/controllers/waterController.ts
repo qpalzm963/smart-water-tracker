@@ -1,13 +1,11 @@
 import { Response, NextFunction } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
-import { getDatabase } from '../database/db';
+import { getRepositoryContainer } from '../repositories';
 import {
   AuthenticatedRequest,
-  Device,
   DrinkRecord,
   DrinkRecordResponse,
-  User,
 } from '../types';
 
 /**
@@ -85,11 +83,11 @@ const dailyStatsQuerySchema = z.object({
     .optional(),
 });
 
-export function recordWaterEvent(
+export async function recordWaterEvent(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   try {
     const userId = req.user?.id || req.device?.userId;
     if (!userId) {
@@ -98,7 +96,8 @@ export function recordWaterEvent(
     }
 
     const payload = syncRecordSchema.parse(req.body);
-    const db = getDatabase();
+    const { deviceRepository, waterRecordRepository, deletedWaterEventRepository } =
+      await getRepositoryContainer();
 
     // Determine device ID with strict tenant ownership validation
     let deviceId: string | null = null;
@@ -107,11 +106,8 @@ export function recordWaterEvent(
       deviceId = req.device.id;
     } else if (payload.deviceId) {
       // User JWT caller: verify that the specified deviceId belongs to the authenticated user
-      const ownedDevice = db
-        .prepare('SELECT id FROM devices WHERE id = ? AND user_id = ?')
-        .get(payload.deviceId, userId) as unknown as Pick<Device, 'id'> | undefined;
-
-      if (!ownedDevice) {
+      const ownedDevice = await deviceRepository.findById(payload.deviceId);
+      if (!ownedDevice || ownedDevice.user_id !== userId) {
         res.status(403).json({ error: 'Device does not belong to current user' });
         return;
       }
@@ -121,9 +117,13 @@ export function recordWaterEvent(
     // Determine event type
     const eventType = payload.type || 'drink';
 
-    // Parse occurredAt
+    const hasOccurredAt =
+      (typeof payload.occurredAt === 'number' && payload.occurredAt > 0) ||
+      (typeof payload.occurredAt === 'string' && payload.occurredAt.trim() !== '' && payload.occurredAt !== '0');
+    const timeSynced = payload.timeSynced !== false && hasOccurredAt;
+
     let occurredAtIso: string;
-    if (payload.timeSynced === false || payload.occurredAt === 0 || !payload.occurredAt) {
+    if (!timeSynced) {
       occurredAtIso = new Date().toISOString();
     } else if (typeof payload.occurredAt === 'number') {
       const parsedDate = new Date(payload.occurredAt * 1000);
@@ -132,25 +132,23 @@ export function recordWaterEvent(
         return;
       }
       occurredAtIso = parsedDate.toISOString();
-    } else {
+    } else if (typeof payload.occurredAt === 'string') {
       const parsedDate = new Date(payload.occurredAt);
       if (isNaN(parsedDate.getTime())) {
         res.status(400).json({ error: 'Invalid occurredAt timestamp format' });
         return;
       }
       occurredAtIso = parsedDate.toISOString();
+    } else {
+      occurredAtIso = new Date().toISOString();
     }
 
     const syncedAtIso = new Date().toISOString();
 
-    // A successful response stops device retry loops while keeping a record
-    // the user permanently deleted from being recreated.
+    // Tombstone check: suppressed permanently deleted events
     if (payload.eventId) {
-      const deletedEvent = db
-        .prepare('SELECT 1 FROM deleted_water_events WHERE user_id = ? AND event_id = ?')
-        .get(userId, payload.eventId);
-
-      if (deletedEvent) {
+      const isDeleted = await deletedWaterEventRepository.isEventDeleted(userId, payload.eventId);
+      if (isDeleted) {
         res.status(200).json({
           message: 'Record was permanently deleted and will not be recreated',
           duplicated: true,
@@ -160,12 +158,9 @@ export function recordWaterEvent(
       }
     }
 
-    // Idempotent deduplication check (strictly scoped by user_id to prevent cross-account leaks)
+    // Idempotent deduplication check
     if (payload.eventId) {
-      const existing = db
-        .prepare('SELECT * FROM drink_records WHERE user_id = ? AND event_id = ?')
-        .get(userId, payload.eventId) as unknown as DrinkRecord | undefined;
-
+      const existing = await waterRecordRepository.findByUserAndEventId(userId, payload.eventId);
       if (existing) {
         res.status(200).json({
           message: 'Record already exists (idempotent)',
@@ -179,77 +174,56 @@ export function recordWaterEvent(
     const recordId = uuidv4();
     const remainingMl = payload.remainingMl !== undefined ? payload.remainingMl : null;
 
-    // Atomic insert with race condition / concurrency protection
     try {
-      db.prepare(
-        `INSERT INTO drink_records (id, event_id, user_id, device_id, event_type, amount_ml, remaining_ml, occurred_at, synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        recordId,
-        payload.eventId || null,
+      const { record, isDuplicate } = await waterRecordRepository.create({
+        id: recordId,
+        eventId: payload.eventId || null,
         userId,
         deviceId,
         eventType,
-        payload.amountMl,
+        amountMl: payload.amountMl,
         remainingMl,
-        occurredAtIso,
-        syncedAtIso
-      );
-    } catch (insertErr: any) {
-      // If concurrent request with same eventId inserted first, return existing record gracefully (200 OK)
-      if (payload.eventId && insertErr?.message?.includes('UNIQUE constraint failed')) {
-        const existing = db
-          .prepare('SELECT * FROM drink_records WHERE user_id = ? AND event_id = ?')
-          .get(userId, payload.eventId) as unknown as DrinkRecord | undefined;
+        occurredAt: occurredAtIso,
+        timeSynced,
+        syncedAt: syncedAtIso,
+      });
 
-        if (existing) {
-          res.status(200).json({
-            message: 'Record already exists (idempotent)',
-            record: formatRecordResponse(existing),
-            duplicated: true,
-          });
-          return;
-        }
+      if (isDuplicate) {
+        res.status(200).json({
+          message: 'Record already exists (idempotent)',
+          record: formatRecordResponse(record),
+          duplicated: true,
+        });
+        return;
       }
-      throw insertErr;
+
+      // Update device last_seen_at if deviceId is known and belongs to this user
+      if (deviceId) {
+        await deviceRepository.updateLastSeen(deviceId, userId, syncedAtIso);
+      }
+
+      res.status(201).json({
+        message: 'Record saved successfully',
+        record: formatRecordResponse(record),
+        duplicated: false,
+      });
+    } catch (err: any) {
+      if (err.code === 'USER_NOT_FOUND') {
+        res.status(404).json({ error: 'User not found or account is being deleted' });
+        return;
+      }
+      throw err;
     }
-
-    // Update device last_seen_at if deviceId is known and belongs to this user
-    if (deviceId) {
-      db.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ? AND user_id = ?').run(
-        syncedAtIso,
-        deviceId,
-        userId
-      );
-    }
-
-    const recordResponse: DrinkRecordResponse = {
-      id: recordId,
-      eventId: payload.eventId || null,
-      userId,
-      deviceId,
-      eventType,
-      amountMl: payload.amountMl,
-      remainingMl,
-      occurredAt: occurredAtIso,
-      syncedAt: syncedAtIso,
-    };
-
-    res.status(201).json({
-      message: 'Record saved successfully',
-      record: recordResponse,
-      duplicated: false,
-    });
   } catch (err) {
     next(err);
   }
 }
 
-export function listRecords(
+export async function listRecords(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   try {
     const userId = req.user?.id;
     if (!userId) {
@@ -268,51 +242,32 @@ export function listRecords(
       page,
       limit,
     } = queryRecordsSchema.parse(req.query);
-    const db = getDatabase();
 
     const fromDate = from || startDate;
     const toDate = to || endDate;
     const recordType = type || eventType;
 
-    const conditions: string[] = ['user_id = ?'];
-    const params: (string | number)[] = [userId];
+    const parsedFrom = fromDate
+      ? fromDate.includes('T')
+        ? fromDate
+        : getTaipeiDayStartIso(fromDate)
+      : undefined;
+    const parsedTo = toDate
+      ? toDate.includes('T')
+        ? toDate
+        : getTaipeiDayEndIso(toDate)
+      : undefined;
 
-    if (fromDate) {
-      conditions.push('occurred_at >= ?');
-      params.push(fromDate.includes('T') ? fromDate : getTaipeiDayStartIso(fromDate));
-    }
-
-    if (toDate) {
-      conditions.push('occurred_at <= ?');
-      params.push(toDate.includes('T') ? toDate : getTaipeiDayEndIso(toDate));
-    }
-
-    if (recordType) {
-      conditions.push('event_type = ?');
-      params.push(recordType);
-    }
-
-    if (deviceId) {
-      conditions.push('device_id = ?');
-      params.push(deviceId);
-    }
-
-    const whereClause = conditions.join(' AND ');
-
-    const countRow = db
-      .prepare(`SELECT COUNT(*) as total FROM drink_records WHERE ${whereClause}`)
-      .get(...params) as unknown as { total: number };
-    const total = countRow.total;
-
-    const offset = (page - 1) * limit;
-    const records = db
-      .prepare(
-        `SELECT * FROM drink_records
-         WHERE ${whereClause}
-         ORDER BY occurred_at DESC
-         LIMIT ? OFFSET ?`
-      )
-      .all(...params, limit, offset) as unknown as DrinkRecord[];
+    const { waterRecordRepository } = await getRepositoryContainer();
+    const { records, total } = await waterRecordRepository.list({
+      userId,
+      fromDate: parsedFrom,
+      toDate: parsedTo,
+      eventType: recordType,
+      deviceId,
+      page,
+      limit,
+    });
 
     const formattedRecords: DrinkRecordResponse[] = records.map(formatRecordResponse);
 
@@ -330,58 +285,44 @@ export function listRecords(
   }
 }
 
-export function deleteRecord(
+export async function deleteRecord(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   const userId = req.user?.id;
   if (!userId) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
 
-  const db = getDatabase();
-
   try {
-    db.exec('BEGIN IMMEDIATE;');
+    const { waterRecordRepository, deletedWaterEventRepository } =
+      await getRepositoryContainer();
 
-    const record = db
-      .prepare('SELECT id, event_id FROM drink_records WHERE id = ? AND user_id = ?')
-      .get(req.params.id, userId) as unknown as Pick<DrinkRecord, 'id' | 'event_id'> | undefined;
-
+    const record = await waterRecordRepository.findById(req.params.id, userId);
     if (!record) {
-      db.exec('ROLLBACK;');
       res.status(404).json({ error: 'Water record not found' });
       return;
     }
 
     if (record.event_id) {
-      db.prepare(
-        `INSERT OR IGNORE INTO deleted_water_events (user_id, event_id)
-         VALUES (?, ?)`
-      ).run(userId, record.event_id);
+      await deletedWaterEventRepository.recordDeletedEvent(userId, record.event_id);
     }
 
-    db.prepare('DELETE FROM drink_records WHERE id = ? AND user_id = ?').run(record.id, userId);
-    db.exec('COMMIT;');
+    await waterRecordRepository.deleteById(record.id, userId);
 
     res.status(200).json({ success: true, message: 'Water record permanently deleted' });
   } catch (err) {
-    try {
-      db.exec('ROLLBACK;');
-    } catch {
-      // The transaction may have failed before it began.
-    }
     next(err);
   }
 }
 
-export function getDailyStats(
+export async function getDailyStats(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   try {
     const userId = req.user?.id;
     if (!userId) {
@@ -391,24 +332,15 @@ export function getDailyStats(
 
     const { date } = dailyStatsQuerySchema.parse(req.query);
     const targetDate = date || getTaipeiDateString();
-    const db = getDatabase();
+    const { userRepository, waterRecordRepository } = await getRepositoryContainer();
 
-    const user = db.prepare('SELECT daily_goal_ml FROM users WHERE id = ?').get(userId) as unknown as
-      | Pick<User, 'daily_goal_ml'>
-      | undefined;
+    const user = await userRepository.findById(userId);
     const goalMl = user?.daily_goal_ml || 2000;
 
-    // Use indexed time bounds for the target date in Taipei timezone
     const dayStart = getTaipeiDayStartIso(targetDate);
     const dayEnd = getTaipeiDayEndIso(targetDate);
 
-    const dayRecords = db
-      .prepare(
-        `SELECT event_type, amount_ml FROM drink_records
-         WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?
-         ORDER BY occurred_at ASC`
-      )
-      .all(userId, dayStart, dayEnd) as unknown as Pick<DrinkRecord, 'event_type' | 'amount_ml'>[];
+    const dayRecords = await waterRecordRepository.getDailyRecords(userId, dayStart, dayEnd);
 
     let totalDrinkMl = 0;
     let drinkCount = 0;
@@ -440,11 +372,11 @@ export function getDailyStats(
   }
 }
 
-export function getWeeklyStats(
+export async function getWeeklyStats(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   try {
     const userId = req.user?.id;
     if (!userId) {
@@ -452,13 +384,10 @@ export function getWeeklyStats(
       return;
     }
 
-    const db = getDatabase();
-    const user = db.prepare('SELECT daily_goal_ml FROM users WHERE id = ?').get(userId) as unknown as
-      | Pick<User, 'daily_goal_ml'>
-      | undefined;
+    const { userRepository, waterRecordRepository } = await getRepositoryContainer();
+    const user = await userRepository.findById(userId);
     const goalMl = user?.daily_goal_ml || 2000;
 
-    // Build 7 days array ending today
     const days: {
       date: string;
       totalMl: number;
@@ -483,15 +412,8 @@ export function getWeeklyStats(
     const startIso = getTaipeiDayStartIso(days[0].date);
     const endIso = getTaipeiDayEndIso(days[6].date);
 
-    // Fetch drink and refill records in this 7-day range using the database index.
-    const records = db
-      .prepare(
-        `SELECT event_type, amount_ml, occurred_at FROM drink_records
-         WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?`
-      )
-      .all(userId, startIso, endIso) as unknown as Pick<DrinkRecord, 'event_type' | 'amount_ml' | 'occurred_at'>[];
+    const records = await waterRecordRepository.getRecordsInRange(userId, startIso, endIso);
 
-    // Aggregate by Taipei date
     const dateMap = new Map<string, number>();
     const countMap = new Map<string, { drinkCount: number; refillCount: number }>();
     for (const rec of records) {
@@ -535,11 +457,11 @@ export function getWeeklyStats(
   }
 }
 
-export function getMonthlyStats(
+export async function getMonthlyStats(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   try {
     const userId = req.user?.id;
     if (!userId) {
@@ -547,13 +469,10 @@ export function getMonthlyStats(
       return;
     }
 
-    const db = getDatabase();
-    const user = db.prepare('SELECT daily_goal_ml FROM users WHERE id = ?').get(userId) as unknown as
-      | Pick<User, 'daily_goal_ml'>
-      | undefined;
+    const { userRepository, waterRecordRepository } = await getRepositoryContainer();
+    const user = await userRepository.findById(userId);
     const goalMl = user?.daily_goal_ml || 2000;
 
-    // Build 30 days array ending today
     const days: {
       date: string;
       totalMl: number;
@@ -578,13 +497,7 @@ export function getMonthlyStats(
     const startIso = getTaipeiDayStartIso(days[0].date);
     const endIso = getTaipeiDayEndIso(days[29].date);
 
-    // Fetch drink and refill records in this 30-day range using the database index.
-    const records = db
-      .prepare(
-        `SELECT event_type, amount_ml, occurred_at FROM drink_records
-         WHERE user_id = ? AND occurred_at >= ? AND occurred_at <= ?`
-      )
-      .all(userId, startIso, endIso) as unknown as Pick<DrinkRecord, 'event_type' | 'amount_ml' | 'occurred_at'>[];
+    const records = await waterRecordRepository.getRecordsInRange(userId, startIso, endIso);
 
     const dateMap = new Map<string, number>();
     const countMap = new Map<string, { drinkCount: number; refillCount: number }>();
@@ -611,7 +524,6 @@ export function getMonthlyStats(
       totalMonthMl += totalMl;
     }
 
-    // Calculate Best Streak in the 30-day window
     let bestStreak = 0;
     let tempStreak = 0;
     for (const day of days) {
@@ -623,18 +535,15 @@ export function getMonthlyStats(
       }
     }
 
-    // Calculate Current Streak ending today (or yesterday if today isn't completed yet)
     let currentStreak = 0;
     const todayIndex = days.length - 1;
 
-    // If today is met, count backward from today
     if (days[todayIndex].goalMet) {
       for (let i = todayIndex; i >= 0; i--) {
         if (days[i].goalMet) currentStreak++;
         else break;
       }
     } else {
-      // If today is not met yet, count backward from yesterday
       for (let i = todayIndex - 1; i >= 0; i--) {
         if (days[i].goalMet) currentStreak++;
         else break;

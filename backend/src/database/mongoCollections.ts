@@ -21,6 +21,7 @@ export interface MongoUserDoc {
   dailyGoalMl: number;
   createdAt: string;
   updatedAt: string;
+  isDeleting?: boolean;
 }
 
 export interface MongoDeviceDoc {
@@ -31,6 +32,7 @@ export interface MongoDeviceDoc {
   name: string | null;
   lastSeenAt: string | null;
   createdAt: string;
+  isDeleting?: boolean;
 }
 
 export interface MongoDrinkRecordDoc {
