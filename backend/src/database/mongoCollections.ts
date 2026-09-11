@@ -7,6 +7,7 @@ export const MONGO_COLLECTIONS = {
   DEVICES: 'devices',
   DRINK_RECORDS: 'drink_records',
   DELETED_WATER_EVENTS: 'deleted_water_events',
+  RATE_LIMITS: 'rate_limits',
 } as const;
 
 export type MongoCollectionName =
@@ -53,4 +54,11 @@ export interface MongoDeletedWaterEventDoc {
   userId: string;
   eventId: string;
   deletedAt: string;
+}
+
+export interface MongoRateLimitDoc {
+  _id: string; // `${prefix}:${clientIp}`
+  totalHits: number;
+  resetTime: Date;
+  expiresAt: Date; // TTL index target
 }

@@ -69,9 +69,22 @@ Configure the following environment variables in **Project Settings > Environmen
 
 ---
 
-## 5. Verification Checklist
+## 5. Serverless Rate Limiting (#9)
+
+To protect authentication endpoints (`/api/v1/auth/login`, `/api/v1/auth/register`) against brute-force password guessing and CPU exhaustion across stateless Vercel Function instances, a distributed shared store is employed:
+
+- **Shared Store**: MongoDB TTL collection (`rate_limits`). Tracks `{ _id: key, totalHits, resetTime, expiresAt }`. A single atomic aggregation-pipeline `findOneAndUpdate` (MongoDB 4.2+) handles both window-open and window-reset in one operation, preventing race conditions across concurrent serverless instances. MongoDB's native TTL index (`idx_rate_limits_ttl`) automatically purges expired records in the background without requiring manual cron jobs.
+- **Fail-Open Resiliency**: If the shared store is unavailable or experiences latency spikes, the rate limiter logs a sanitized operational warning (all MongoDB connection strings and tokens are redacted before logging) and gracefully falls back to an in-memory store. Requests are never rejected with internal 500 errors due to rate limiter storage issues.
+- **Proxy IP Resolution**: Rate limiting keys are generated using `ipKeyGenerator()` from `express-rate-limit`, which normalises IPv6 addresses to a `/56` subnet CIDR to prevent address-rotation bypasses. Client IPs are resolved in order: `x-real-ip` → `x-forwarded-for` (first hop) → Express `req.ip` (`trust proxy = 1`).
+
+No additional environment variables are required for rate limiting — it operates automatically using the existing `MONGODB_URI` and `MONGODB_DB_NAME` connection.
+
+---
+
+## 6. Verification Checklist
 - [ ] `/api/v1/health` on production URL returns `200 OK` with `runtime: "vercel-serverless"`.
 - [ ] Browser Network inspection confirms `/api/v1/*` requests are same-origin (no CORS errors).
 - [ ] Refreshing frontend routes (e.g. `/history`, `/devices`) renders correctly without 404.
 - [ ] Registering a user writes to `water_tracker` in production, and `water_tracker_preview` in preview PRs.
+- [ ] Repeated login failures (>20 attempts/min) from the same IP receive HTTP `429 Too Many Requests` with `Retry-After` headers across multiple serverless invocations.
 - [ ] No secrets appear in `dist/assets/*.js` client bundles.

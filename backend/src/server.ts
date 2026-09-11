@@ -2,6 +2,7 @@ import { createApp } from './app';
 import { config } from './config/env';
 import { initializePersistence } from './repositories';
 import { closeMongoConnection } from './database/mongo';
+import { sanitizeErrorMessage } from './utils/sanitize';
 
 async function startServer(): Promise<void> {
   // Initialize MongoDB Persistence & Indexes
@@ -37,14 +38,7 @@ async function startServer(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
-function sanitizeServerError(err: unknown): string {
-  const raw = err instanceof Error ? (err.stack || err.message) : String(err);
-  return raw
-    .replace(/mongodb(?:\+srv)?:\/\/[^\s@]+@/gi, 'mongodb+srv://***:***@')
-    .replace(/dvt_[a-f0-9]{32,64}/gi, 'dvt_***');
-}
-
 startServer().catch((err) => {
-  console.error('[Server] Failed to start:', sanitizeServerError(err));
+  console.error('[Server] Failed to start:', sanitizeErrorMessage(err, true));
   process.exit(1);
 });
