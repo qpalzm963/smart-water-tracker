@@ -17,6 +17,7 @@
     "app:dev": "npm --workspace=app run dev",
     "app:build": "npm --workspace=app run build",
     "app:test": "npm --workspace=app run test",
-    "backend:migrate:mongo": "npm --workspace=backend run migrate:mongo --"
+    "backend:migrate:mongo": "npm --workspace=backend run migrate:mongo --",
+    "test:smoke": "npm --workspace=backend run test:smoke"
   }
 }

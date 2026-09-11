@@ -9,6 +9,7 @@
     "prestart": "npm run build",
     "start": "node dist/server.js",
     "test": "cross-env NODE_OPTIONS=\"--experimental-vm-modules\" jest --runInBand",
+    "test:smoke": "tsx src/scripts/productionSmokeTest.ts",
     "migrate:mongo": "NODE_OPTIONS=\"--experimental-sqlite\" tsx src/scripts/migrateSqliteToMongo.ts"
   },
   "dependencies": {
