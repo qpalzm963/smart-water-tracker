@@ -7,7 +7,7 @@
 enum TrackerState {
     TRACKER_UNKNOWN,
     TRACKER_IDLE,          // 水杯放置中，狀態穩定
-    TRACKER_CUP_LIFTED,    // 水杯已拿起 (低於空秤閾值)
+    TRACKER_CUP_LIFTED,    // 水杯已拿起 (低於杯子存在閾值)
     TRACKER_DRINKING,      // 喝水中 (水杯持續在手中)
     TRACKER_CUP_RETURNED,  // 水杯已放回，等待數值穩定
     TRACKER_PROCESSING     // 結算水量變化
@@ -83,6 +83,7 @@ private:
     int _dailyGoalMl;
     int _reminderMinutes;
     float _minDrinkThreshold;
+    // 杯子存在判定閾值。空杯去皮後，拿走杯子可能產生負重量，因此允許為負值。
     float _emptyCupThreshold;
 
     unsigned long _lastDrinkTimestamp;
