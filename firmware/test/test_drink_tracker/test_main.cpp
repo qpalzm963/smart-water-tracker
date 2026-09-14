@@ -52,17 +52,48 @@ static void pump(DrinkTracker& tracker, int iterations, int stepMs) {
 static int doOneDrink(DrinkTracker& tracker, FakeScale& scale) {
     const float base = tracker.getEmptyCupThreshold() + 275.0f;
     const int drankMl = (int)(tracker.getMinDrinkThreshold() + 65.0f);
+    const float liftedWeight = tracker.getEmptyCupThreshold() - 50.0f;
 
     scale.weight = base;
     scale.stable = true;
     pump(tracker, 10, 50);
 
-    scale.weight = 0.0f;
+    scale.weight = liftedWeight;
     pump(tracker, 20, 50);
 
     scale.weight = base - drankMl;
     pump(tracker, 40, 50);
     return drankMl;
+}
+
+void test_legacy_cup_threshold_is_migrated() {
+    Preferences prefs;
+    prefs.begin(PREFS_NAMESPACE, false);
+    prefs.putFloat("empty_cup", 25.0f);
+    prefs.remove("cup_thr_ver");
+    prefs.end();
+
+    FakeScale scale;
+    DrinkTracker tracker(scale);
+    tracker.begin();
+
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, EMPTY_CUP_THRESHOLD_G,
+                             tracker.getEmptyCupThreshold());
+}
+
+void test_custom_cup_threshold_is_preserved_during_migration() {
+    Preferences prefs;
+    prefs.begin(PREFS_NAMESPACE, false);
+    prefs.putFloat("empty_cup", -150.0f);
+    prefs.remove("cup_thr_ver");
+    prefs.end();
+
+    FakeScale scale;
+    DrinkTracker tracker(scale);
+    tracker.begin();
+
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, -150.0f,
+                             tracker.getEmptyCupThreshold());
 }
 
 // 開機當下 ScaleManager 還沒取得任何讀數。若直接把基準重設為那個 0，
@@ -84,6 +115,7 @@ void test_boot_with_cup_already_on_scale_emits_no_event() {
 }
 
 // 開機時秤上沒有杯子，之後才放上空杯，也不能被判成補水。
+// 本專案的使用流程是空杯先去皮，因此裸秤會是負重量而不是 0g。
 void test_boot_with_empty_scale_then_place_empty_cup_emits_no_event() {
     FakeScale scale;
     DrinkTracker tracker(scale);
@@ -91,13 +123,14 @@ void test_boot_with_empty_scale_then_place_empty_cup_emits_no_event() {
     g_eventCount = 0;
 
     tracker.begin();
+    tracker.setEmptyCupThreshold(-100.0f);
 
-    scale.weight = 0.0f;
+    scale.weight = -464.1f;
     scale.stable = true;
     pump(tracker, 10, 50);
     TEST_ASSERT_EQUAL_INT(TRACKER_UNKNOWN, tracker.getState());
 
-    scale.weight = tracker.getEmptyCupThreshold() + 275.0f;
+    scale.weight = 3.0f;
     pump(tracker, 60, 50);
 
     TEST_ASSERT_EQUAL_INT(0, g_eventCount);
@@ -118,6 +151,36 @@ void test_drink_is_detected_after_cup_returns() {
     TEST_ASSERT_EQUAL_INT(1, g_eventCount);
     TEST_ASSERT_EQUAL_INT(EVENT_DRINK, g_lastEventType);
     TEST_ASSERT_EQUAL_INT(drankMl, g_lastAmountMl);
+}
+
+// 使用者先把空杯去皮後，拿走杯子會得到明顯負重量；喝完放回的空杯則回到接近 0g。
+// 兩者都不能被舊的固定正閾值正確區分，這個案例確保空杯放回仍會完成結算。
+void test_tared_empty_cup_is_detected_after_return() {
+    FakeScale scale;
+    DrinkTracker tracker(scale);
+    tracker.onDrinkEvent(captureEvent);
+    g_eventCount = 0;
+
+    setClock(DAY1_NOON);
+    tracker.begin();
+    tracker.setEmptyCupThreshold(-100.0f);
+
+    // 空杯去皮後裝入約 303g 水，空杯本身回到約 3g。
+    scale.weight = 303.0f;
+    scale.stable = true;
+    pump(tracker, 10, 50);
+
+    // 完全拿走杯子時，實測讀值約為 -464.1g。
+    scale.weight = -464.1f;
+    pump(tracker, 20, 50);
+
+    // 喝完放回空杯，讀值回到約 3g；應在穩定後產生 300ml 喝水事件。
+    scale.weight = 3.0f;
+    pump(tracker, 40, 50);
+
+    TEST_ASSERT_EQUAL_INT(1, g_eventCount);
+    TEST_ASSERT_EQUAL_INT(EVENT_DRINK, g_lastEventType);
+    TEST_ASSERT_EQUAL_INT(300, g_lastAmountMl);
 }
 
 // 使用者最容易遇到的情境：晚上關機、隔天開機。舊的做法把日期只留在 RAM，
@@ -170,9 +233,12 @@ void test_daily_total_resets_when_clock_syncs_late() {
 void setup() {
     delay(2000);
     UNITY_BEGIN();
+    RUN_TEST(test_legacy_cup_threshold_is_migrated);
+    RUN_TEST(test_custom_cup_threshold_is_preserved_during_migration);
     RUN_TEST(test_boot_with_cup_already_on_scale_emits_no_event);
     RUN_TEST(test_boot_with_empty_scale_then_place_empty_cup_emits_no_event);
     RUN_TEST(test_drink_is_detected_after_cup_returns);
+    RUN_TEST(test_tared_empty_cup_is_detected_after_return);
     RUN_TEST(test_daily_total_resets_after_reboot_across_midnight);
     RUN_TEST(test_daily_total_resets_when_clock_syncs_late);
     UNITY_END();

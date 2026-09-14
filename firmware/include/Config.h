@@ -16,7 +16,7 @@
 #define DEFAULT_REMINDER_MINUTES     45      // 久未喝水提醒間隔 (分鐘)
 #define MIN_DRINK_THRESHOLD_G        15.0f   // 判定為喝水的最小重量減少量 (克/毫升)
 #define REFILL_THRESHOLD_G           35.0f   // 判定為加水的重量增加量 (克/毫升)
-#define EMPTY_CUP_THRESHOLD_G        25.0f   // 空秤閾值 (低於此重量視為杯子已拿開)
+#define EMPTY_CUP_THRESHOLD_G        -100.0f // 杯子存在閾值 (低於此重量視為杯子已拿開；支援空杯去皮)
 #define STABILITY_TOLERANCE_G        1.5f    // 讀數穩定判定公差 (克)
 #define STABLE_SAMPLES_REQUIRED      4       // 連續穩定取樣次數
 

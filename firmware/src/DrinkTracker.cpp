@@ -1,5 +1,11 @@
 #include "DrinkTracker.h"
 
+namespace {
+constexpr float LEGACY_CUP_PRESENCE_THRESHOLD_G = 25.0f;
+constexpr uint8_t CUP_PRESENCE_THRESHOLD_SETTINGS_VERSION = 1;
+constexpr char CUP_PRESENCE_THRESHOLD_VERSION_KEY[] = "cup_thr_ver";
+}
+
 // 把 epoch 換算成當地日期代碼 YYYYMMDD
 static int dayStampFrom(time_t sec) {
     struct tm timeinfo;
@@ -78,8 +84,8 @@ void DrinkTracker::update() {
 
     switch (_state) {
         case TRACKER_UNKNOWN:
-            // 空秤的穩定讀值代表「目前沒有杯子」，不能當成喝水中的狀態。
-            // 必須等杯子放上來後才建立基準，否則空秤 0g -> 空杯重量會被判成補水。
+            // 穩定且高於杯子存在閾值的讀值代表「目前有杯子」，才能建立基準。
+            // 閾值可為負值，以支援使用者先放空杯去皮後再開始使用。
             if (isStable && currentWeight >= _emptyCupThreshold) {
                 _baselineWeight = currentWeight;
                 _state = TRACKER_IDLE;
@@ -88,12 +94,13 @@ void DrinkTracker::update() {
             break;
 
         case TRACKER_IDLE:
-            // 待機中：若讀數穩定且高於空秤，持續微幅校正基準重量（適應環境溫漂或緩慢揮發）
+            // 待機中：若讀數穩定且高於杯子存在閾值，持續微幅校正基準重量
+            // （適應環境溫漂或緩慢揮發）。
             if (isStable && currentWeight >= _emptyCupThreshold) {
                 _baselineWeight = currentWeight;
             }
 
-            // 判定水杯是否被拿起 (低於空秤閾值)
+            // 判定水杯是否被拿起 (低於杯子存在閾值)
             if (currentWeight < _emptyCupThreshold) {
                 Serial.printf("[DrinkTracker] 偵測到水杯拿起 (拿起前基準重: %.1fg)\n", _baselineWeight);
                 _state = TRACKER_CUP_LIFTED;
@@ -119,7 +126,7 @@ void DrinkTracker::update() {
             break;
 
         case TRACKER_DRINKING:
-            // 判定水杯是否放回 (重量高於空秤閾值)
+            // 判定水杯是否放回 (重量高於杯子存在閾值)
             if (currentWeight >= _emptyCupThreshold) {
                 Serial.printf("[DrinkTracker] 偵測到水杯放回，等待穩定... (當前讀數: %.1fg)\n", currentWeight);
                 _state = TRACKER_CUP_RETURNED;
@@ -269,7 +276,9 @@ void DrinkTracker::setMinDrinkThreshold(float g) {
 }
 
 void DrinkTracker::setEmptyCupThreshold(float g) {
-    if (g >= 5.0f && g <= 500.0f) {
+    // 空杯去皮後，拿走杯子會讓 HX711 讀值變成負數；保留合理下限，
+    // 避免誤把極端設定當成有效的杯子存在判定值。
+    if (g >= -1000.0f && g <= 500.0f) {
         _emptyCupThreshold = g;
         saveSettings();
     }
@@ -281,6 +290,8 @@ void DrinkTracker::saveSettings() {
     _prefs.putInt("reminder_min", _reminderMinutes);
     _prefs.putFloat("min_drink", _minDrinkThreshold);
     _prefs.putFloat("empty_cup", _emptyCupThreshold);
+    _prefs.putUChar(CUP_PRESENCE_THRESHOLD_VERSION_KEY,
+                    CUP_PRESENCE_THRESHOLD_SETTINGS_VERSION);
     _prefs.putInt("today_total", _todayTotalMl);
     _prefs.putInt("today_ymd", _todayStamp);
     _prefs.end();
@@ -288,6 +299,8 @@ void DrinkTracker::saveSettings() {
 
 void DrinkTracker::loadSettings() {
     _prefs.begin(PREFS_NAMESPACE, true);
+    const uint8_t cupThresholdVersion =
+        _prefs.getUChar(CUP_PRESENCE_THRESHOLD_VERSION_KEY, 0);
     _dailyGoalMl = _prefs.getInt("daily_goal", DEFAULT_DAILY_GOAL_ML);
     _reminderMinutes = _prefs.getInt("reminder_min", DEFAULT_REMINDER_MINUTES);
     _minDrinkThreshold = _prefs.getFloat("min_drink", MIN_DRINK_THRESHOLD_G);
@@ -295,4 +308,14 @@ void DrinkTracker::loadSettings() {
     _todayTotalMl = _prefs.getInt("today_total", 0);
     _todayStamp = _prefs.getInt("today_ymd", 0);
     _prefs.end();
+
+    if (cupThresholdVersion < CUP_PRESENCE_THRESHOLD_SETTINGS_VERSION) {
+        // 舊韌體會把 25g 預設值寫進 NVS。只遷移這個舊預設；其他自訂值保留不動。
+        if (_emptyCupThreshold == LEGACY_CUP_PRESENCE_THRESHOLD_G) {
+            _emptyCupThreshold = EMPTY_CUP_THRESHOLD_G;
+        }
+        saveSettings();
+        Serial.printf("[DrinkTracker] 杯子存在閾值設定已遷移為 %.1fg\n",
+                      _emptyCupThreshold);
+    }
 }
