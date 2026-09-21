@@ -1,18 +1,23 @@
 # 🥤 Smart Water Tracker (智慧喝水追蹤器)
 
-以 **ESP32-C3 SuperMini + HX711 5KG 稱重模組** 打造的桌面智慧喝水追蹤系統，搭配雲端 **RESTful API 後端服務** 與手機 App / 網頁儀表板。
+以 **ESP32-C3 SuperMini + HX711 5KG 稱重模組** 打造的桌面智慧喝水追蹤系統，搭配雲端 **RESTful API 後端服務**、手機 App / 網頁儀表板，以及原生 macOS「小貓釣魚」桌面 App。
 
 ---
 
 ## 🐱 Mac 桌面釣魚 App
 
-新增原生 macOS「小貓釣魚」：以貓咪繪本池塘作為可置頂的小視窗，支援選單列喝水記錄、藍牙杯墊、釣魚收藏與本機歷史紀錄。
+原生 SwiftUI + AppKit 桌面 App，支援 macOS 14 以上，以貓咪繪本池塘作為可置頂、可拖曳的小視窗。
 
-建置方式及目前功能界線請見 [macos/README.md](macos/README.md)。執行 `cd macos && bash scripts/build-app.sh` 後，開啟 `macos/build/小貓釣魚.app` 即可試用。
+- **喝水記錄**：選單列快速新增、藍牙杯墊即時記錄、七天趨勢、歷史紀錄與 JSON 匯出。
+- **喝水回饋**：小水杯輕彈、水位平滑上升與「＋XX ml」浮字淡出；連續新增合併顯示，池塘不再彈出「已記錄」提示。
+- **釣魚收藏**：每累積 200 ml 獲得一次釣魚機會，每日最多發放 8 次；四段收竿動畫搭配五種魚的收藏圖鑑。
+- **動態效果設定**：支援系統「減少動態效果」；隱藏池塘時不補播喝水動畫，收竿期間不播放喝水動畫。
+
+macOS 版資料保存在本機，目前未串接雲端帳號或跨裝置同步。完整操作、藍牙限制與資料備份方式請見 [macos/README.md](macos/README.md)。
 
 ## 📁 Monorepo 專案結構
 
-本專案採用 Monorepo 結構管理韌體、後端、前端 App 與教學工作坊：
+本專案採用 Monorepo 結構管理韌體、後端、前端 App、macOS App 與教學工作坊：
 
 ```
 smart-water-tracker/
@@ -29,6 +34,12 @@ smart-water-tracker/
 │   │   ├── views/            # Dashboard, BLE 控制, 歷程, 統計, 裝置管理, 設定
 │   │   └── components/       # 導覽列與語意化功能元件
 │   └── tests/                # Vitest 單元測試
+├── macos/                    # 🐱 SwiftUI + AppKit 小貓釣魚桌面 App
+│   ├── Package.swift         # Swift Package，最低 macOS 14
+│   ├── Sources/              # 桌面介面、BLE、飲水與釣魚規則、美術資源
+│   ├── Tests/                # XCTest：資料規則、收竿與喝水回饋
+│   ├── Design/               # 美術稿與動畫設計說明
+│   └── scripts/build-app.sh  # 建置並簽署本機 .app
 ├── firmware/                 # 🔌 ESP32-C3 稱重感測韌體 (PlatformIO)
 │   ├── platformio.ini
 │   ├── include/
@@ -87,7 +98,20 @@ npm run backend:test
 
 啟動後可開啟瀏覽器訪問 `http://localhost:3000` 查看網頁管理儀表板。
 
-### 2. 硬體韌體 (Firmware)
+### 3. macOS 桌面 App（小貓釣魚）
+
+需要 macOS 14 以上及 Xcode 15 以上或對應的 Swift 工具鏈。在專案根目錄執行：
+
+```bash
+cd macos
+swift test
+bash scripts/build-app.sh
+open build/小貓釣魚.app
+```
+
+App 使用選單列水滴圖示，不占用 Dock。建置產物位於 `macos/build/小貓釣魚.app`，採本機 ad-hoc 簽署，尚未提供 Developer ID 公證版本。macOS 測試需另行執行 `swift test`，不包含在根目錄 `npm test` 中。
+
+### 4. 硬體韌體 (Firmware)
 
 進入 `firmware` 目錄，使用 PlatformIO 進行編譯與燒錄：
 
