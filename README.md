@@ -4,6 +4,12 @@
 
 ---
 
+## 🐱 Mac 桌面釣魚 App
+
+新增原生 macOS「小貓釣魚」：以貓咪繪本池塘作為可置頂的小視窗，支援選單列喝水記錄、藍牙杯墊、釣魚收藏與本機歷史紀錄。
+
+建置方式及目前功能界線請見 [macos/README.md](macos/README.md)。執行 `cd macos && bash scripts/build-app.sh` 後，開啟 `macos/build/小貓釣魚.app` 即可試用。
+
 ## 📁 Monorepo 專案結構
 
 本專案採用 Monorepo 結構管理韌體、後端、前端 App 與教學工作坊：
