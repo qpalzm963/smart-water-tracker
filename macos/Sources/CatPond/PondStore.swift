@@ -17,6 +17,15 @@ final class PondStore: ObservableObject {
     @Published var pondVisible = true {
         didSet { if !pondVisible { clearHydrationFeedback() } }
     }
+    @Published private(set) var weatherSnapshot: WeatherSnapshot?
+    @Published private(set) var weatherLoading = false
+    @Published private(set) var weatherFailed = false
+    private let weatherClient: any WeatherFetching
+    private var weatherTask: Task<Void, Never>?
+    private var weatherRequestID = UUID()
+    private var lastWeatherAttempt: Date?
+    private var weatherUpdatesStarted = false
+    private var wakeObserver: AnyCancellable?
     private var hydrationTask: Task<Void, Never>?
     private var storageUnavailable = false
     private let file: URL
@@ -27,7 +36,8 @@ final class PondStore: ObservableObject {
     var openDetails: ((String) -> Void)?
     var setPinned: ((Bool) -> Void)?
 
-    init(file: URL? = nil) {
+    init(file: URL? = nil, weatherClient: any WeatherFetching = OpenMeteoClient()) {
+        self.weatherClient = weatherClient
         let override = ProcessInfo.processInfo.environment["CATPOND_DATA_DIR"].map { URL(fileURLWithPath: $0).appendingPathComponent("state.json") }
         self.file = file ?? override ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("CatPond/state.json")
@@ -37,7 +47,87 @@ final class PondStore: ObservableObject {
             storageUnavailable = true
             self.error = "無法讀取既有紀錄，已停止寫入以保留原檔。請備份並檢查 \(self.file.path)"
         }
-        clock = Timer.publish(every: 30, on: .main, in: .common).autoconnect().sink { [weak self] in self?.now = $0 }
+        weatherSnapshot = data.weatherCache
+        clock = Timer.publish(every: 30, on: .main, in: .common).autoconnect().sink { [weak self] date in
+            self?.now = date
+            self?.refreshWeatherIfNeeded(at: date)
+        }
+    }
+
+    var currentWeather: WeatherSnapshot? { validWeather(at: now) }
+    func validWeather(at date: Date) -> WeatherSnapshot? {
+        weatherSnapshot.flatMap { $0.isUsable(for: data.weatherCity, at: date) ? $0 : nil }
+    }
+    var weatherSummary: String {
+        guard let city = data.weatherCity else { return "選擇天氣城市" }
+        guard let weather = currentWeather else {
+            return city.name + (weatherLoading ? " · 更新天氣中" : " · 天氣暫時無法更新")
+        }
+        return "\(city.name) · \(weather.condition.name) · \(Int(weather.temperature.rounded()))°"
+    }
+    var weatherDetail: String {
+        guard data.weatherCity != nil else { return "選擇城市，讓池塘跟隨當地天氣。" }
+        guard let cached = weatherSnapshot, cached.city == data.weatherCity else {
+            return weatherLoading ? "正在取得天氣，暫時使用普通魚池。" : "尚無天氣資料，仍可釣到普通魚。"
+        }
+        let updated = cached.fetchedAt.formatted(date: .abbreviated, time: .shortened)
+        if currentWeather == nil { return "上次更新 \(updated) · 資料已過期，暫時使用普通魚池。" }
+        return "更新於 \(updated)" + (weatherFailed ? " · 連線失敗，暫用最近資料" : "")
+    }
+    func startWeatherUpdates() {
+        guard !weatherUpdatesStarted else { return }
+        weatherUpdatesStarted = true
+        refreshWeatherIfNeeded(at: Date())
+        wakeObserver = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: RunLoop.main).sink { [weak self] _ in
+                self?.now = Date()
+                self?.refreshWeatherIfNeeded(at: Date())
+            }
+    }
+    func selectWeatherCity(_ city: TaiwanCity?) {
+        guard city != data.weatherCity else { return }
+        guard commit({ $0.weatherCity = city; $0.weatherCache = nil }) else { return }
+        weatherTask?.cancel()
+        weatherRequestID = UUID()
+        weatherTask = nil
+        weatherLoading = false
+        weatherFailed = false
+        weatherSnapshot = nil
+        lastWeatherAttempt = nil
+        refreshWeather()
+    }
+    func refreshWeatherIfNeeded(at date: Date) {
+        guard weatherUpdatesStarted, data.weatherCity != nil, !weatherLoading else { return }
+        let last = lastWeatherAttempt ?? weatherSnapshot?.fetchedAt ?? .distantPast
+        let interval: TimeInterval = weatherFailed ? 300 : 1800
+        if date.timeIntervalSince(last) >= interval || date < last { refreshWeather() }
+    }
+    func refreshWeather() {
+        guard let city = data.weatherCity, !weatherLoading else { return }
+        let requestID = UUID()
+        weatherRequestID = requestID
+        weatherLoading = true
+        lastWeatherAttempt = Date()
+        let client = weatherClient
+        weatherTask = Task { @MainActor [weak self] in
+            do {
+                let snapshot = try await client.fetch(city: city)
+                guard let self, !Task.isCancelled, self.weatherRequestID == requestID,
+                      self.data.weatherCity == city else { return }
+                guard snapshot.isUsable(for: city, at: Date()) else { throw URLError(.cannotParseResponse) }
+                self.now = Date()
+                self.weatherSnapshot = snapshot
+                self.weatherFailed = false
+                self.commit { $0.weatherCache = snapshot }
+            } catch {
+                guard let self, !Task.isCancelled, self.weatherRequestID == requestID else { return }
+                self.now = Date()
+                self.weatherFailed = true
+            }
+            guard let self, self.weatherRequestID == requestID else { return }
+            self.weatherLoading = false
+            self.weatherTask = nil
+        }
     }
 
     var total: Int { data.total(on: now) }
@@ -112,7 +202,9 @@ final class PondStore: ObservableObject {
     func reel(reduceMotion: Bool = false) {
         guard !isReeling, caught == nil, data.tickets > 0 else { return }
         var result: CaughtFish?
-        guard commit({ result = $0.catchFish() }), let result else { return }
+        now = Date()
+        let weather = validWeather(at: now)
+        guard commit({ result = $0.catchFish(now: now, weather: weather) }), let result else { return }
         clearHydrationFeedback()
         pendingCatch = result
         reelStartedAt = Date()

@@ -29,6 +29,9 @@ struct FishingSceneLayer: View {
                                 .position(x: geometry.size.width * 0.325, y: geometry.size.height * 0.393).blur(radius: 1.3) }
                             .opacity(time.truncatingRemainder(dividingBy: 5.3) < 0.18 ? 1 : 0)
                     }
+                    if let condition = store.currentWeather?.condition, condition.isRaining {
+                        Canvas { context, size in WeatherPainter.umbrella(context: &context, size: size) }
+                    }
                     Canvas { context, size in
                         FishingPainter.draw(context: &context, size: size, time: time, motion: motion, ready: store.data.tickets > 0, still: reduceMotion)
                     }
@@ -56,6 +59,11 @@ struct FishingSceneLayer: View {
                             .rotationEffect(.degrees(motion.fishAngle))
                             .position(x: motion.fishCenter.x * geometry.size.width, y: motion.fishCenter.y * geometry.size.height)
                             .opacity(motion.fishOpacity)
+                    }
+                    if let condition = store.currentWeather?.condition {
+                        Canvas { context, size in
+                            WeatherPainter.atmosphere(context: &context, size: size, condition: condition, time: time, still: reduceMotion)
+                        }
                     }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)

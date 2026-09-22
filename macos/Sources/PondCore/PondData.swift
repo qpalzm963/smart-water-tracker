@@ -17,7 +17,7 @@ public struct WaterRecord: Codable, Identifiable, Equatable {
 }
 
 public enum FishSpecies: String, CaseIterable, Codable, Identifiable {
-    case peach, sunshine, mint, blueberry, moon
+    case peach, sunshine, mint, blueberry, moon, raindrop, thunderlight, mistveil
     public var id: String { rawValue }
     public var name: String {
         switch self {
@@ -26,6 +26,9 @@ public enum FishSpecies: String, CaseIterable, Codable, Identifiable {
         case .mint: return "薄荷小魚"
         case .blueberry: return "藍莓小魚"
         case .moon: return "月光小魚"
+        case .raindrop: return "雨滴魚"
+        case .thunderlight: return "雷光魚"
+        case .mistveil: return "霧紗魚"
         }
     }
     public var story: String {
@@ -35,9 +38,24 @@ public enum FishSpecies: String, CaseIterable, Codable, Identifiable {
         case .mint: return "躲在荷葉下，是牠最拿手的捉迷藏。"
         case .blueberry: return "帶著一身湖水的顏色，慢慢游進你的日常。"
         case .moon: return "把月光藏在魚鰭裡，留給晚歸的小貓。"
+        case .raindrop: return "用水滴般的尾巴，接住池塘上的細雨。"
+        case .thunderlight: return "把遠方的雷光，織成身上的金色花紋。"
+        case .mistveil: return "披著一層薄霧，輕輕游過清晨的池塘。"
         }
     }
-    public var rarity: String { self == .moon ? "稀有" : (self == .blueberry ? "少見" : "常見") }
+    public var requiredWeather: WeatherCondition? {
+        switch self {
+        case .raindrop: return .rain
+        case .thunderlight: return .thunderstorm
+        case .mistveil: return .fog
+        default: return nil
+        }
+    }
+    public var rarity: String { requiredWeather != nil ? "天氣限定" : self == .moon ? "稀有" : (self == .blueberry ? "少見" : "常見") }
+    public static func draw(roll: Int, weather: WeatherCondition?, weatherRoll: Int) -> FishSpecies {
+        if (0..<20).contains(weatherRoll), let special = weather?.exclusiveFish { return special }
+        return draw(roll: roll)
+    }
     public static func draw(roll: Int) -> FishSpecies {
         switch roll {
         case 0..<32: return .peach
@@ -53,8 +71,11 @@ public struct CaughtFish: Codable, Identifiable, Equatable {
     public let id: UUID
     public let species: FishSpecies
     public let date: Date
-    public init(species: FishSpecies, date: Date = Date()) {
+    public let city: TaiwanCity?
+    public let weather: WeatherCondition?
+    public init(species: FishSpecies, date: Date = Date(), city: TaiwanCity? = nil, weather: WeatherCondition? = nil) {
         self.id = UUID(); self.species = species; self.date = date
+        self.city = city; self.weather = weather
     }
 }
 
@@ -75,6 +96,8 @@ public struct PondData: Codable, Equatable {
     public var goal = 2000
     public var pinned = true
     public var decoration = "水草"
+    public var weatherCity: TaiwanCity?
+    public var weatherCache: WeatherSnapshot?
     public var preferredPeripheral: String?
     public var preferredPeripheralName: String?
     public private(set) var fishingRemainderMl = 0
@@ -85,7 +108,7 @@ public struct PondData: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case version, records, fish, rewards, seenIDs, goal, pinned, decoration
-        case preferredPeripheral, preferredPeripheralName, fishingRemainderMl
+        case preferredPeripheral, preferredPeripheralName, fishingRemainderMl, weatherCity, weatherCache
     }
 
     public init(from decoder: Decoder) throws {
@@ -104,6 +127,9 @@ public struct PondData: Codable, Equatable {
         decoration = try container.decode(String.self, forKey: .decoration)
         preferredPeripheral = try container.decodeIfPresent(String.self, forKey: .preferredPeripheral)
         preferredPeripheralName = try container.decodeIfPresent(String.self, forKey: .preferredPeripheralName)
+        weatherCity = try container.decodeIfPresent(TaiwanCity.self, forKey: .weatherCity)
+        // A damaged disposable weather cache must not block access to drink records.
+        weatherCache = try? container.decodeIfPresent(WeatherSnapshot.self, forKey: .weatherCache)
         // V1 awards used a time-based rule. Preserve those tickets, but never re-credit historical intake.
         fishingRemainderMl = storedVersion == 1 ? 0 : try container.decode(Int.self, forKey: .fishingRemainderMl)
         guard (0..<Self.waterPerTicket).contains(fishingRemainderMl) else {
@@ -149,10 +175,14 @@ public struct PondData: Codable, Equatable {
     }
 
     @discardableResult
-    public mutating func catchFish(roll: Int = Int.random(in: 0..<100), now: Date = Date()) -> CaughtFish? {
+    public mutating func catchFish(roll: Int = Int.random(in: 0..<100), now: Date = Date(),
+                                   weather: WeatherSnapshot? = nil,
+                                   weatherRoll: Int = Int.random(in: 0..<100)) -> CaughtFish? {
         guard let index = rewards.firstIndex(where: { !$0.spent }) else { return nil }
         rewards[index].spent = true
-        let caught = CaughtFish(species: FishSpecies.draw(roll: roll), date: now)
+        let validWeather = weather.flatMap { $0.isUsable(for: weatherCity, at: now) ? $0 : nil }
+        let species = FishSpecies.draw(roll: roll, weather: validWeather?.condition, weatherRoll: weatherRoll)
+        let caught = CaughtFish(species: species, date: now, city: weatherCity, weather: validWeather?.condition)
         fish.append(caught)
         return caught
     }

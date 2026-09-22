@@ -6,6 +6,7 @@ enum Artwork {
     static let pond = load("pond")
     static let blink = load("pond-blink")
     static let fishAtlas = load("fish-atlas")
+    static let weatherFishAtlas = load("weather-fish-atlas")
     static let pull = load("pond-pull")
     static let lift = load("pond-lift")
     static let happy = load("pond-happy")
@@ -35,6 +36,9 @@ extension FishSpecies {
         case .mint: return Color(red: 0.39, green: 0.68, blue: 0.56)
         case .blueberry: return Color(red: 0.38, green: 0.56, blue: 0.72)
         case .moon: return Color(red: 0.68, green: 0.61, blue: 0.79)
+        case .raindrop: return Color(red: 0.35, green: 0.68, blue: 0.80)
+        case .thunderlight: return Color(red: 0.48, green: 0.35, blue: 0.65)
+        case .mistveil: return Color(red: 0.64, green: 0.72, blue: 0.70)
         }
     }
 }
@@ -80,6 +84,12 @@ struct PondScene: View {
                         sceneButton("xmark", "隱藏池塘") { store.hidePond?() }
                         sceneButton(store.data.pinned ? "pin.fill" : "pin", store.data.pinned ? "取消置頂" : "置頂") { store.togglePin() }
                         Spacer()
+                        Button { store.openDetails?("settings") } label: {
+                            Image(systemName: store.currentWeather?.condition.symbol ?? "cloud")
+                                .frame(width: 29, height: 29)
+                        }.buttonStyle(.plain).background(PondStyle.cream.opacity(0.94), in: Circle())
+                            .help(store.weatherSummary + "\n" + store.weatherDetail)
+                            .accessibilityLabel(store.weatherSummary + "，開啟天氣設定")
                         sceneButton("drop", "記錄喝水") { store.openDetails?("records") }
                         sceneButton("arrow.up.left.and.arrow.down.right", "展開魚缸與紀錄") { store.openDetails?("aquarium") }
                     }.padding(12); Spacer() }.transition(.opacity)
@@ -102,6 +112,7 @@ struct PondScene: View {
             .contextMenu {
                 Button("記錄喝水") { store.openDetails?("records") }
                 Button("我的魚缸") { store.openDetails?("aquarium") }
+                Button(store.weatherSummary) { store.openDetails?("settings") }
                 Button(store.data.pinned ? "取消置頂" : "置頂") { store.togglePin() }
                 Button("隱藏池塘") { store.hidePond?() }
             }
@@ -119,6 +130,9 @@ struct PondScene: View {
             FishDrawing(species: fish.species).frame(width: compact ? 116 : 160, height: compact ? 78 : 112)
             Text(fish.species.name).font(.system(size: compact ? 18 : 21, weight: .semibold, design: .serif))
             Text(fish.species.rarity).font(.caption).foregroundStyle(.secondary)
+            if let city = fish.city, let weather = fish.weather {
+                Text("\(city.name) · \(weather.name)").font(.caption2).foregroundStyle(PondStyle.teal)
+            }
             Button("收進魚缸") { store.dismissCatch() }.buttonStyle(.borderedProminent).tint(PondStyle.coral)
         }.frame(maxWidth: compact ? 220 : 250).padding(compact ? 14 : 20)
             .background(PondStyle.cream, in: RoundedRectangle(cornerRadius: 22))

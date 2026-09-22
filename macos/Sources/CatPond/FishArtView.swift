@@ -10,6 +10,9 @@ extension FishSpecies {
         case .mint: return CGRect(x: 1026, y: 101, width: 502, height: 373)
         case .blueberry: return CGRect(x: 10, y: 542, width: 477, height: 391)
         case .moon: return CGRect(x: 492, y: 556, width: 548, height: 391)
+        case .raindrop: return CGRect(x: 8, y: 75, width: 496, height: 430)
+        case .thunderlight: return CGRect(x: 516, y: 75, width: 496, height: 430)
+        case .mistveil: return CGRect(x: 1028, y: 75, width: 500, height: 430)
         }
     }
     var swimSpeed: Double {
@@ -19,6 +22,9 @@ extension FishSpecies {
         case .mint: return 0.19
         case .blueberry: return 0.14
         case .moon: return 0.06
+        case .raindrop: return 0.10
+        case .thunderlight: return 0.17
+        case .mistveil: return 0.05
         }
     }
     var swimSize: CGFloat {
@@ -28,6 +34,9 @@ extension FishSpecies {
         case .mint: return 88
         case .blueberry: return 82
         case .moon: return 112
+        case .raindrop: return 90
+        case .thunderlight: return 100
+        case .mistveil: return 114
         }
     }
     var personality: String {
@@ -37,6 +46,9 @@ extension FishSpecies {
         case .mint: return "荷葉間的小快艇"
         case .blueberry: return "愛四處張望的探險家"
         case .moon: return "沿著月光緩緩滑行"
+        case .raindrop: return "跟著雨點輕輕搖尾"
+        case .thunderlight: return "追逐雷聲的小精靈"
+        case .mistveil: return "披著薄紗的清晨旅人"
         }
     }
 }
@@ -49,7 +61,7 @@ struct FishDrawing: View {
         GeometryReader { geometry in
             let bounds = species.spriteBounds
             let scale = min(geometry.size.width / bounds.width, geometry.size.height / bounds.height)
-            Image(nsImage: Artwork.fishAtlas).resizable()
+            Image(nsImage: species.requiredWeather == nil ? Artwork.fishAtlas : Artwork.weatherFishAtlas).resizable()
                 .frame(width: 1536 * scale, height: 1024 * scale)
                 .offset(x: -bounds.minX * scale, y: -bounds.minY * scale)
                 .frame(width: bounds.width * scale, height: bounds.height * scale, alignment: .topLeading)

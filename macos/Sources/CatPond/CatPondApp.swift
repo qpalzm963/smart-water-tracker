@@ -16,6 +16,7 @@ final class AppServices: NSObject, ObservableObject, NSWindowDelegate {
         store.openDetails = { [weak self] section in self?.showDetails(section) }
         store.setPinned = { [weak self] pinned in self?.panel?.level = pinned ? .floating : .normal }
         showPond()
+        store.startWeatherUpdates()
         bluetooth.restoreIfNeeded()
     }
     func showPond() {

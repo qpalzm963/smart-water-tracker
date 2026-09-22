@@ -35,6 +35,10 @@ struct MenuContent: View {
             }
             ProgressView(value: store.progress).tint(PondStyle.teal)
             Text(store.fishingProgressText).font(.caption).foregroundStyle(PondStyle.teal)
+            Button { store.openDetails?("settings") } label: {
+                Label(store.weatherSummary, systemImage: store.currentWeather?.condition.symbol ?? "cloud")
+                    .font(.caption)
+            }.buttonStyle(.plain).help(store.weatherDetail)
             QuickLog(store: store)
             if let toast = store.toast { Text(toast).font(.caption).foregroundStyle(PondStyle.teal) }
             if let error = store.error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
@@ -138,11 +142,19 @@ struct DetailView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         FishDrawing(species: species).frame(height: 120).saturation(count > 0 ? 1 : 0).opacity(count > 0 ? 1 : 0.23)
                         Text(count > 0 ? species.name : "尚未相遇").font(.headline)
+                        if let weather = species.requiredWeather {
+                            Text("\(weather.name)限定 · 出現機率 20%").font(.caption).foregroundStyle(PondStyle.teal)
+                        }
                         if count > 0 { Text(species.personality).font(.caption).foregroundStyle(PondStyle.teal) }
                         Text(count > 0 ? species.story : "下一次收竿，也許就會遇見牠。")
                             .font(.caption).foregroundStyle(.secondary).frame(height: 36, alignment: .top)
                         Text(count > 0 ? "\(species.rarity) · 已收藏 \(count) 隻" : "？")
                             .font(.caption2).foregroundStyle(PondStyle.teal)
+                        if let latest = store.data.fish.last(where: { $0.species == species }),
+                           let city = latest.city, let weather = latest.weather {
+                            Text("最近相遇：\(city.name) · \(weather.name)")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     }.padding(20).background(.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 18)).compositingGroup()
                 }
             }
@@ -289,6 +301,7 @@ struct SettingsView: View {
                 Toggle("小池塘保持置頂", isOn: Binding(get: { store.data.pinned }, set: { _ in store.togglePin() }))
                     .padding(12).frame(maxWidth: .infinity, alignment: .leading)
             }
+            WeatherSettingsView(store: store)
             GroupBox("智慧杯墊") {
                 VStack(alignment: .leading, spacing: 14) {
                     Label(bluetooth.status, systemImage: bluetooth.connected ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right")
@@ -319,5 +332,38 @@ struct SettingsView: View {
                 }.font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
             }
         }.onAppear { goal = String(store.data.goal) }
+    }
+}
+
+
+struct WeatherSettingsView: View {
+    @ObservedObject var store: PondStore
+    var body: some View {
+        GroupBox("池塘天氣") {
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("天氣城市", selection: Binding<TaiwanCity?>(get: { store.data.weatherCity }, set: store.selectWeatherCity)) {
+                    Text("請選擇城市").tag(TaiwanCity?.none)
+                    ForEach(TaiwanCity.allCases) { city in Text(city.name).tag(Optional(city)) }
+                }.frame(maxWidth: 320)
+                HStack {
+                    Label(store.weatherSummary, systemImage: store.currentWeather?.condition.symbol ?? "cloud")
+                        .foregroundStyle(PondStyle.teal)
+                    Spacer()
+                    Button(store.weatherLoading ? "更新中…" : "更新天氣") { store.refreshWeather() }
+                        .disabled(store.data.weatherCity == nil || store.weatherLoading)
+                }
+                Text(store.weatherDetail).font(.caption).foregroundStyle(.secondary)
+                if let special = store.currentWeather?.condition.exclusiveFish {
+                    Text("現在有機會遇見\(special.name) · 每次收竿 20%")
+                        .font(.callout).foregroundStyle(PondStyle.teal)
+                }
+                Text("每 30 分鐘更新；雨天、雷雨與起霧各有專屬魚兒。取得的魚永久收藏，釣魚機會可以留到喜歡的天氣再用。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("使用縣市代表地點的氣象模型資料，可能與窗外天氣不同。斷線最多沿用 2 小時，過期後仍可釣普通魚。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Link("天氣資料：Open-Meteo · CC BY 4.0", destination: URL(string: "https://open-meteo.com/")!)
+                    .font(.caption)
+            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
