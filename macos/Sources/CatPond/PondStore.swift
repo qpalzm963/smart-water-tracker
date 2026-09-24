@@ -236,9 +236,10 @@ final class PondStore: ObservableObject {
         }
     }
     func remove(_ record: WaterRecord) { _ = commit { $0.removeManual(id: record.id) } }
-    func updateGoal(_ value: Int) {
-        guard (100...10000).contains(value) else { error = "目標請填寫 100～10000 ml。"; return }
-        _ = commit { $0.goal = value }
+    @discardableResult
+    func updateGoal(_ value: Int) -> Bool {
+        guard (100...10000).contains(value) else { error = "目標請填寫 100～10000 ml。"; return false }
+        return commit { $0.goal = value }
     }
     func togglePin() {
         if commit({ $0.pinned.toggle() }) { setPinned?(data.pinned) }

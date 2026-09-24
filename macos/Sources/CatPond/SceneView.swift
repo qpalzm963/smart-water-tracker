@@ -4,6 +4,9 @@ import PondCore
 
 enum Artwork {
     static let pond = load("pond")
+    static let aquarium = load("aquarium-garden")
+    static let aquariumRocks = load("aquarium-rocks")
+    static let aquariumCottage = load("aquarium-cottage")
     static let blink = load("pond-blink")
     static let fishAtlas = load("fish-atlas")
     static let weatherFishAtlas = load("weather-fish-atlas")
