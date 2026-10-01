@@ -50,7 +50,7 @@ struct AquariumPage: View {
                     Text("\(store.data.fish.count)").font(.system(size: 25, weight: .medium, design: .rounded)).monospacedDigit()
                     Text("隻收藏").font(.system(size: 12)).foregroundStyle(PondStyle.muted)
                     Text("·").padding(.horizontal, 8).foregroundStyle(PondStyle.line)
-                    Text("\(Set(store.data.fish.map(\.species)).count) / 8").font(.system(size: 25, weight: .medium, design: .rounded)).monospacedDigit()
+                    Text("\(Set(store.data.fish.map(\.species)).count) / \(FishSpecies.allCases.count)").font(.system(size: 25, weight: .medium, design: .rounded)).monospacedDigit()
                     Text("種相遇").font(.system(size: 12)).foregroundStyle(PondStyle.muted)
                 }
                 Spacer()

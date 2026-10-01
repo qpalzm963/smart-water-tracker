@@ -28,7 +28,7 @@ final class WeatherTests: XCTestCase {
                 }
             }
             let multiplier = weather.exclusiveFish == nil ? 100 : 80
-            for (fish, weight) in [(FishSpecies.peach, 32), (.sunshine, 28), (.mint, 22), (.blueberry, 14), (.moon, 4)] {
+            for (fish, weight) in FishSpecies.ordinaryWeights {
                 XCTAssertEqual(counts[fish], weight * multiplier)
             }
             if let special = weather.exclusiveFish { XCTAssertEqual(counts[special], 2000) }
@@ -91,5 +91,36 @@ final class WeatherTests: XCTestCase {
         // A disposable cache cannot make all saved fish unreadable.
         json["weatherCache"] = ["broken": true]
         XCTAssertEqual(try JSONDecoder().decode(PondData.self, from: JSONSerialization.data(withJSONObject: json)), old)
+    }
+}
+
+final class FishPoolTests: XCTestCase {
+    func testOrdinaryPoolCoversEveryNonWeatherSpeciesWithRarityTiers() {
+        let pool = FishSpecies.ordinaryWeights
+        XCTAssertEqual(pool.map(\.weight).reduce(0, +), 100)
+        XCTAssertEqual(Set(pool.map(\.species)), Set(FishSpecies.allCases.filter { $0.requiredWeather == nil }))
+        XCTAssertEqual(pool.count, 15)
+        XCTAssertEqual(FishSpecies.allCases.count, 18)
+        XCTAssertEqual(FishSpecies.draw(roll: 0), .peach)
+        XCTAssertEqual(FishSpecies.draw(roll: 99), .moon)
+        var counts: [FishSpecies: Int] = [:]
+        for roll in 0..<100 { counts[FishSpecies.draw(roll: roll), default: 0] += 1 }
+        for entry in pool { XCTAssertEqual(counts[entry.species], entry.weight) }
+        XCTAssertEqual(FishSpecies.sakura.rarity, "常見")
+        XCTAssertEqual(FishSpecies.cloud.rarity, "少見")
+        XCTAssertEqual(FishSpecies.aurora.rarity, "稀有")
+        XCTAssertEqual(FishSpecies.lantern.rarity, "稀有")
+        XCTAssertEqual(FishSpecies.blueberry.rarity, "少見")
+        XCTAssertEqual(FishSpecies.moon.rarity, "稀有")
+        XCTAssertEqual(FishSpecies.raindrop.rarity, "天氣限定")
+        XCTAssertEqual(Set(FishSpecies.allCases.map(\.name)).count, FishSpecies.allCases.count)
+    }
+
+    func testNewSpeciesSurviveSaveAndLoad() throws {
+        var state = PondData()
+        state.fish = [CaughtFish(species: .aurora), CaughtFish(species: .pebble)]
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        try PondPersistence.save(state, to: url)
+        XCTAssertEqual(try PondPersistence.load(from: url).fish.map(\.species), [.aurora, .pebble])
     }
 }

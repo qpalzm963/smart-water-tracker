@@ -42,6 +42,16 @@ extension FishSpecies {
         case .raindrop: return Color(red: 0.35, green: 0.68, blue: 0.80)
         case .thunderlight: return Color(red: 0.48, green: 0.35, blue: 0.65)
         case .mistveil: return Color(red: 0.64, green: 0.72, blue: 0.70)
+        case .sakura: return Color(red: 0.90, green: 0.60, blue: 0.68)
+        case .lemon: return Color(red: 0.90, green: 0.76, blue: 0.30)
+        case .strawberry: return Color(red: 0.86, green: 0.38, blue: 0.42)
+        case .pebble: return Color(red: 0.55, green: 0.53, blue: 0.49)
+        case .cloud: return Color(red: 0.56, green: 0.70, blue: 0.81)
+        case .bubble: return Color(red: 0.32, green: 0.66, blue: 0.63)
+        case .maple: return Color(red: 0.80, green: 0.40, blue: 0.24)
+        case .ribbon: return Color(red: 0.36, green: 0.60, blue: 0.60)
+        case .lantern: return Color(red: 0.27, green: 0.45, blue: 0.51)
+        case .aurora: return Color(red: 0.55, green: 0.62, blue: 0.85)
         }
     }
 }

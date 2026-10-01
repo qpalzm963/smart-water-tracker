@@ -3,7 +3,8 @@ import PondCore
 
 extension FishSpecies {
     /// Atlas coordinates are kept in source pixels, preserving each fish's complete fins.
-    var spriteBounds: CGRect {
+    /// Species without atlas coordinates are painted natively by `PaintedFish`.
+    var spriteBounds: CGRect? {
         switch self {
         case .peach: return CGRect(x: 14, y: 90, width: 476, height: 376)
         case .sunshine: return CGRect(x: 508, y: 82, width: 503, height: 399)
@@ -13,6 +14,7 @@ extension FishSpecies {
         case .raindrop: return CGRect(x: 8, y: 75, width: 496, height: 430)
         case .thunderlight: return CGRect(x: 516, y: 75, width: 496, height: 430)
         case .mistveil: return CGRect(x: 1028, y: 75, width: 500, height: 430)
+        default: return nil
         }
     }
     var swimSpeed: Double {
@@ -25,6 +27,16 @@ extension FishSpecies {
         case .raindrop: return 0.10
         case .thunderlight: return 0.17
         case .mistveil: return 0.05
+        case .sakura: return 0.09
+        case .lemon: return 0.13
+        case .strawberry: return 0.08
+        case .pebble: return 0.055
+        case .cloud: return 0.065
+        case .bubble: return 0.12
+        case .maple: return 0.16
+        case .ribbon: return 0.11
+        case .lantern: return 0.07
+        case .aurora: return 0.09
         }
     }
     var swimSize: CGFloat {
@@ -37,6 +49,16 @@ extension FishSpecies {
         case .raindrop: return 90
         case .thunderlight: return 100
         case .mistveil: return 114
+        case .sakura: return 84
+        case .lemon: return 80
+        case .strawberry: return 76
+        case .pebble: return 82
+        case .cloud: return 96
+        case .bubble: return 86
+        case .maple: return 92
+        case .ribbon: return 108
+        case .lantern: return 94
+        case .aurora: return 112
         }
     }
     var personality: String {
@@ -49,6 +71,16 @@ extension FishSpecies {
         case .raindrop: return "跟著雨點輕輕搖尾"
         case .thunderlight: return "追逐雷聲的小精靈"
         case .mistveil: return "披著薄紗的清晨旅人"
+        case .sakura: return "隨風飄落的小花瓣"
+        case .lemon: return "酸酸甜甜的開心果"
+        case .strawberry: return "頭戴綠葉的小甜點"
+        case .pebble: return "最愛賴在溪底發呆"
+        case .cloud: return "軟綿綿的午睡專家"
+        case .bubble: return "邊游邊吹泡泡的許願家"
+        case .maple: return "追著落葉的秋日旅人"
+        case .ribbon: return "拖著緞帶的小郵差"
+        case .lantern: return "替夜歸朋友點燈的守護者"
+        case .aurora: return "身上流動著北方的光"
         }
     }
 }
@@ -58,15 +90,20 @@ extension FishSpecies {
 struct FishDrawing: View {
     let species: FishSpecies
     var body: some View {
-        GeometryReader { geometry in
-            let bounds = species.spriteBounds
-            let scale = min(geometry.size.width / bounds.width, geometry.size.height / bounds.height)
-            Image(nsImage: species.requiredWeather == nil ? Artwork.fishAtlas : Artwork.weatherFishAtlas).resizable()
-                .frame(width: 1536 * scale, height: 1024 * scale)
-                .offset(x: -bounds.minX * scale, y: -bounds.minY * scale)
-                .frame(width: bounds.width * scale, height: bounds.height * scale, alignment: .topLeading)
-                .clipped()
-                .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+        Group {
+            if let bounds = species.spriteBounds {
+                GeometryReader { geometry in
+                    let scale = min(geometry.size.width / bounds.width, geometry.size.height / bounds.height)
+                    Image(nsImage: species.requiredWeather == nil ? Artwork.fishAtlas : Artwork.weatherFishAtlas).resizable()
+                        .frame(width: 1536 * scale, height: 1024 * scale)
+                        .offset(x: -bounds.minX * scale, y: -bounds.minY * scale)
+                        .frame(width: bounds.width * scale, height: bounds.height * scale, alignment: .topLeading)
+                        .clipped()
+                        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                }
+            } else {
+                Image(nsImage: PaintedFish.image(for: species)).resizable().scaledToFit()
+            }
         }
         .compositingGroup().blendMode(.multiply)
         .accessibilityLabel(species.name)

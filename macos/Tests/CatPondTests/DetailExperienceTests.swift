@@ -33,7 +33,8 @@ final class DetailExperienceTests: XCTestCase {
     }
 
     func testLatestTwelvePreserveIdentitiesAndFishTraverseTheTank() {
-        let fish = (0..<20).map { CaughtFish(species: FishSpecies.allCases[$0 % 8]) }
+        let allSpecies = FishSpecies.allCases
+        let fish = (0..<20).map { CaughtFish(species: allSpecies[$0 % allSpecies.count]) }
         XCTAssertEqual(DetailData.displayedFish(fish).map(\.id), Array(fish.suffix(12)).map(\.id))
         for species in FishSpecies.allCases {
             for index in 0..<12 {
@@ -93,7 +94,12 @@ final class DetailExperienceTests: XCTestCase {
             data.add(WaterRecord(date: day.addingTimeInterval(-Double(i % 9) * 1800), amount: 100 + i % 4 * 50,
                                  source: i % 2 == 0 ? "manual" : "qa-device", kind: i % 13 == 0 ? "refill" : "drink"), now: now)
         }
-        data.fish = (0..<16).map { CaughtFish(species: FishSpecies.allCases[$0 % 8], date: now.addingTimeInterval(-Double(16 - $0) * 3600), city: $0 % 2 == 0 ? .taipei : nil, weather: $0 % 2 == 0 ? .rain : nil) }
+        let allSpecies = FishSpecies.allCases
+        data.fish = (0..<16).map { (index: Int) -> CaughtFish in
+            let even = index % 2 == 0
+            return CaughtFish(species: allSpecies[index % allSpecies.count], date: now.addingTimeInterval(-Double(16 - index) * 3600),
+                              city: even ? .taipei : nil, weather: even ? .rain : nil)
+        }
         data.weatherCity = .taipei
         data.weatherCache = WeatherSnapshot(city: .taipei, code: 61, temperature: 24, observedAt: now, fetchedAt: now)
         try PondPersistence.save(data, to: file)

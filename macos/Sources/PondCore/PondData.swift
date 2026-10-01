@@ -18,6 +18,7 @@ public struct WaterRecord: Codable, Identifiable, Equatable {
 
 public enum FishSpecies: String, CaseIterable, Codable, Identifiable {
     case peach, sunshine, mint, blueberry, moon, raindrop, thunderlight, mistveil
+    case sakura, lemon, strawberry, pebble, cloud, bubble, maple, ribbon, lantern, aurora
     public var id: String { rawValue }
     public var name: String {
         switch self {
@@ -29,6 +30,16 @@ public enum FishSpecies: String, CaseIterable, Codable, Identifiable {
         case .raindrop: return "雨滴魚"
         case .thunderlight: return "雷光魚"
         case .mistveil: return "霧紗魚"
+        case .sakura: return "櫻花小魚"
+        case .lemon: return "檸檬小魚"
+        case .strawberry: return "草莓小魚"
+        case .pebble: return "小石魚"
+        case .cloud: return "雲朵魚"
+        case .bubble: return "泡泡魚"
+        case .maple: return "楓葉魚"
+        case .ribbon: return "緞帶魚"
+        case .lantern: return "燈籠魚"
+        case .aurora: return "極光魚"
         }
     }
     public var story: String {
@@ -41,6 +52,16 @@ public enum FishSpecies: String, CaseIterable, Codable, Identifiable {
         case .raindrop: return "用水滴般的尾巴，接住池塘上的細雨。"
         case .thunderlight: return "把遠方的雷光，織成身上的金色花紋。"
         case .mistveil: return "披著一層薄霧，輕輕游過清晨的池塘。"
+        case .sakura: return "春天落進池塘的花瓣，悄悄長出了尾巴。"
+        case .lemon: return "游過的地方，都留下一點清爽的檸檬香。"
+        case .strawberry: return "把夏天最甜的那一口，藏在圓圓的肚子裡。"
+        case .pebble: return "在溪底躺了好久，被水流磨得圓圓潤潤。"
+        case .cloud: return "從天空掉進池塘的一朵雲，還記得飄的感覺。"
+        case .bubble: return "每吐一顆泡泡，就藏進一個小小的願望。"
+        case .maple: return "穿著一身楓紅，把秋天帶進池塘。"
+        case .ribbon: return "尾巴上的緞帶，是準備送給小貓的禮物。"
+        case .lantern: return "頭上的小燈籠，照亮池底最深的角落。"
+        case .aurora: return "在最安靜的夜裡，把極光披在身上游過。"
         }
     }
     public var requiredWeather: WeatherCondition? {
@@ -51,19 +72,28 @@ public enum FishSpecies: String, CaseIterable, Codable, Identifiable {
         default: return nil
         }
     }
-    public var rarity: String { requiredWeather != nil ? "天氣限定" : self == .moon ? "稀有" : (self == .blueberry ? "少見" : "常見") }
+    /// Ordinary pond odds out of 100. Peach stays at roll 0 and moon at roll 99.
+    public static let ordinaryWeights: [(species: FishSpecies, weight: Int)] = [
+        (.peach, 12), (.sunshine, 10), (.mint, 9), (.sakura, 9), (.lemon, 8), (.strawberry, 8), (.pebble, 8),
+        (.blueberry, 6), (.cloud, 6), (.bubble, 6), (.maple, 5), (.ribbon, 5),
+        (.lantern, 3), (.aurora, 3), (.moon, 2)
+    ]
+    public var ordinaryWeight: Int? { Self.ordinaryWeights.first { $0.species == self }?.weight }
+    public var rarity: String {
+        guard requiredWeather == nil, let weight = ordinaryWeight else { return "天氣限定" }
+        return weight >= 8 ? "常見" : weight >= 5 ? "少見" : "稀有"
+    }
     public static func draw(roll: Int, weather: WeatherCondition?, weatherRoll: Int) -> FishSpecies {
         if (0..<20).contains(weatherRoll), let special = weather?.exclusiveFish { return special }
         return draw(roll: roll)
     }
     public static func draw(roll: Int) -> FishSpecies {
-        switch roll {
-        case 0..<32: return .peach
-        case 32..<60: return .sunshine
-        case 60..<82: return .mint
-        case 82..<96: return .blueberry
-        default: return .moon
+        var remaining = roll
+        for entry in ordinaryWeights {
+            if remaining < entry.weight { return entry.species }
+            remaining -= entry.weight
         }
+        return ordinaryWeights[ordinaryWeights.count - 1].species
     }
 }
 
